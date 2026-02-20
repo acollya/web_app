@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "<string>", line 3, in <module>
+  File "/opt/python/envs/mgx-chat/lib/python3.10/site-packages/docx/api.py", line 25, in Document
+    document_part = Package.open(docx).main_document_part
+  File "/opt/python/envs/mgx-chat/lib/python3.10/site-packages/docx/opc/package.py", line 128, in open
+    pkg_reader = PackageReader.from_file(pkg_file)
+  File "/opt/python/envs/mgx-chat/lib/python3.10/site-packages/docx/opc/pkgreader.py", line 32, in from_file
+    phys_reader = PhysPkgReader(pkg_file)
+  File "/opt/python/envs/mgx-chat/lib/python3.10/site-packages/docx/opc/phys_pkg.py", line 30, in __new__
+    raise PackageNotFoundError(
+docx.opc.exceptions.PackageNotFoundError: Package not found at '/workspace/uploads/Privacidade e Segurança - Acollya.docx'
