@@ -2,7 +2,7 @@
  * Chat Service - Handles streaming chat with Acollya AI
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { supabase, isDemoMode } from '@/lib/supabase';
 import type {
   ChatMessage,
   ChatSession,
@@ -11,14 +11,7 @@ import type {
   ChatResponse,
 } from '@/types/chat';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
-}
-
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '';
 
 /**
  * Send message with streaming response
@@ -27,6 +20,14 @@ export async function sendMessage(options: SendMessageOptions): Promise<ChatResp
   const { message, sessionId, onChunk, onComplete, onError } = options;
 
   try {
+    if (!supabase || isDemoMode()) {
+      // Demo mode fallback
+      const demoResponse = 'Estou aqui para ajudar! No modo demo, as respostas são simuladas. Configure o Supabase para usar o chat com IA.';
+      if (onChunk) onChunk(demoResponse);
+      if (onComplete) onComplete({ done: true, session_id: sessionId || 'demo-session' });
+      return { response: demoResponse, session_id: sessionId || 'demo-session' };
+    }
+
     // Get current session
     const {
       data: { session },
@@ -145,6 +146,10 @@ export async function sendMessage(options: SendMessageOptions): Promise<ChatResp
  */
 export async function getSessions(): Promise<ChatSession[]> {
   try {
+    if (!supabase || isDemoMode()) {
+      return [];
+    }
+
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -176,6 +181,10 @@ export async function getSessions(): Promise<ChatSession[]> {
  */
 export async function getSessionMessages(sessionId: string): Promise<ChatMessage[]> {
   try {
+    if (!supabase || isDemoMode()) {
+      return [];
+    }
+
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -206,6 +215,17 @@ export async function getSessionMessages(sessionId: string): Promise<ChatMessage
  */
 export async function createSession(title: string = 'Nova Conversa'): Promise<ChatSession> {
   try {
+    if (!supabase || isDemoMode()) {
+      return {
+        id: `demo-${Date.now()}`,
+        user_id: 'demo-user',
+        title,
+        is_active: true,
+        created_at: new Date().toISOString(),
+        last_message_at: new Date().toISOString(),
+      } as ChatSession;
+    }
+
     const {
       data: { user },
     } = await supabase.auth.getUser();
@@ -240,6 +260,10 @@ export async function createSession(title: string = 'Nova Conversa'): Promise<Ch
  */
 export async function updateSessionTitle(sessionId: string, title: string): Promise<void> {
   try {
+    if (!supabase || isDemoMode()) {
+      return;
+    }
+
     const { error } = await supabase
       .from('chat_sessions')
       .update({ title })
@@ -259,6 +283,10 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
  */
 export async function deleteSession(sessionId: string): Promise<void> {
   try {
+    if (!supabase || isDemoMode()) {
+      return;
+    }
+
     const { error } = await supabase
       .from('chat_sessions')
       .update({ is_active: false })
@@ -278,6 +306,10 @@ export async function deleteSession(sessionId: string): Promise<void> {
  */
 export async function getRateLimitInfo(): Promise<{ remaining: number; limit: number }> {
   try {
+    if (!supabase || isDemoMode()) {
+      return { remaining: 20, limit: 20 };
+    }
+
     const {
       data: { user },
     } = await supabase.auth.getUser();
