@@ -1,0 +1,39 @@
+version: '3.9'
+
+# Local development stack — PostgreSQL with pgvector + Redis
+# Usage: docker-compose up -d
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: acollya-postgres
+    environment:
+      POSTGRES_USER: acollya_admin
+      POSTGRES_PASSWORD: localdev
+      POSTGRES_DB: acollya
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U acollya_admin -d acollya"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: acollya-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

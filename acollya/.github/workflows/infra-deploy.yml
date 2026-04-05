@@ -1,0 +1,126 @@
+name: Deploy Infrastructure (CDK)
+
+on:
+  push:
+    branches:
+      - main        # deploy to dev on merge to main
+      - production  # deploy to prod on merge to production
+    paths:
+      - 'acollya-infra/**'
+      - '.github/workflows/infra-deploy.yml'
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Stage to deploy (dev or prod)'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev, prod]
+
+env:
+  AWS_REGION: sa-east-1
+  CDK_DIR: acollya-infra
+  PYTHON_VERSION: '3.12'
+
+jobs:
+  # ── Diff (always runs, shows what will change) ────────────────────────────
+  cdk-diff:
+    name: CDK Diff — ${{ github.event.inputs.stage || (github.ref == 'refs/heads/production' && 'prod' || 'dev') }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: '${{ env.CDK_DIR }}/requirements.txt'
+
+      - name: Install CDK
+        run: npm install -g aws-cdk@2
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+        working-directory: ${{ env.CDK_DIR }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CDK_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: CDK Diff
+        run: |
+          STAGE=${{ github.event.inputs.stage || (github.ref == 'refs/heads/production' && 'prod' || 'dev') }}
+          cdk diff --all \
+            --context stage=$STAGE \
+            --context account=${{ secrets.AWS_ACCOUNT_ID }} \
+            --context region=${{ env.AWS_REGION }} 2>&1 | tee cdk-diff.txt
+        working-directory: ${{ env.CDK_DIR }}
+
+  # ── Deploy ────────────────────────────────────────────────────────────────
+  cdk-deploy:
+    name: CDK Deploy — ${{ github.event.inputs.stage || (github.ref == 'refs/heads/production' && 'prod' || 'dev') }}
+    runs-on: ubuntu-latest
+    needs: cdk-diff
+    environment:
+      name: ${{ github.event.inputs.stage || (github.ref == 'refs/heads/production' && 'prod' || 'dev') }}
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: '${{ env.CDK_DIR }}/requirements.txt'
+
+      - name: Install CDK + Docker (needed for Lambda bundling)
+        run: |
+          npm install -g aws-cdk@2
+          docker info  # verify Docker is available
+
+      - name: Install Python dependencies (CDK)
+        run: pip install -r requirements.txt
+        working-directory: ${{ env.CDK_DIR }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CDK_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: CDK Bootstrap (idempotent — only runs if not bootstrapped)
+        run: |
+          cdk bootstrap \
+            aws://${{ secrets.AWS_ACCOUNT_ID }}/${{ env.AWS_REGION }} \
+            --context stage=$STAGE
+        env:
+          STAGE: ${{ github.event.inputs.stage || (github.ref == 'refs/heads/production' && 'prod' || 'dev') }}
+        working-directory: ${{ env.CDK_DIR }}
+
+      - name: CDK Deploy
+        run: |
+          STAGE=${{ github.event.inputs.stage || (github.ref == 'refs/heads/production' && 'prod' || 'dev') }}
+          cdk deploy --all \
+            --require-approval never \
+            --context stage=$STAGE \
+            --context account=${{ secrets.AWS_ACCOUNT_ID }} \
+            --context region=${{ env.AWS_REGION }} \
+            --outputs-file cdk-outputs.json
+        working-directory: ${{ env.CDK_DIR }}
+
+      - name: Upload CDK outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdk-outputs-${{ github.run_id }}
+          path: ${{ env.CDK_DIR }}/cdk-outputs.json
+          retention-days: 30

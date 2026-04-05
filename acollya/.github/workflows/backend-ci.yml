@@ -1,0 +1,173 @@
+name: Backend CI + Deploy Lambda
+
+on:
+  push:
+    branches: [main, production]
+    paths:
+      - 'acollya-backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'acollya-backend/**'
+
+env:
+  AWS_REGION: sa-east-1
+  PYTHON_VERSION: '3.12'
+  BACKEND_DIR: acollya-backend
+
+jobs:
+  # ── Lint & Test ───────────────────────────────────────────────────────────
+  test:
+    name: Lint + Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg15
+        env:
+          POSTGRES_USER: acollya_admin
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: acollya_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: '${{ env.BACKEND_DIR }}/requirements-dev.txt'
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+        working-directory: ${{ env.BACKEND_DIR }}
+
+      - name: Lint (ruff)
+        run: ruff check app/
+        working-directory: ${{ env.BACKEND_DIR }}
+
+      - name: Format check (ruff)
+        run: ruff format --check app/
+        working-directory: ${{ env.BACKEND_DIR }}
+
+      - name: Run Alembic migrations (test DB)
+        run: alembic upgrade head
+        working-directory: ${{ env.BACKEND_DIR }}
+        env:
+          STAGE: dev
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: acollya_test
+          DB_USER: acollya_admin
+          DB_PASSWORD: testpassword
+
+      - name: Run tests
+        run: pytest
+        working-directory: ${{ env.BACKEND_DIR }}
+        env:
+          STAGE: dev
+          DB_HOST: localhost
+          DB_PORT: 5432
+          DB_NAME: acollya_test
+          DB_USER: acollya_admin
+          DB_PASSWORD: testpassword
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          REDIS_TLS: 'false'
+          JWT_PRIVATE_KEY: ${{ secrets.TEST_JWT_PRIVATE_KEY }}
+          JWT_PUBLIC_KEY: ${{ secrets.TEST_JWT_PUBLIC_KEY }}
+
+  # ── Deploy Lambda ─────────────────────────────────────────────────────────
+  deploy-lambda:
+    name: Deploy Lambda — ${{ github.ref == 'refs/heads/production' && 'prod' || 'dev' }}
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push'
+    environment:
+      name: ${{ github.ref == 'refs/heads/production' && 'prod' || 'dev' }}
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_CDK_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Package Lambda (zip with dependencies)
+        run: |
+          pip install -r requirements.txt -t package/ --quiet
+          cp -r app handler.py package/
+          cd package && zip -r ../lambda.zip . -q
+          echo "Lambda package size: $(du -sh ../lambda.zip | cut -f1)"
+        working-directory: ${{ env.BACKEND_DIR }}
+
+      - name: Set stage variable
+        id: stage
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/production" ]]; then
+            echo "stage=prod" >> $GITHUB_OUTPUT
+          else
+            echo "stage=dev" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update Lambda — API function
+        run: |
+          aws lambda update-function-code \
+            --function-name acollya-api-${{ steps.stage.outputs.stage }} \
+            --zip-file fileb://${{ env.BACKEND_DIR }}/lambda.zip \
+            --publish
+
+      - name: Update Lambda — Chat function
+        run: |
+          aws lambda update-function-code \
+            --function-name acollya-chat-${{ steps.stage.outputs.stage }} \
+            --zip-file fileb://${{ env.BACKEND_DIR }}/lambda.zip \
+            --publish
+
+      - name: Run DB migrations on Lambda (via invoke)
+        run: |
+          aws lambda invoke \
+            --function-name acollya-api-${{ steps.stage.outputs.stage }} \
+            --payload '{"path": "/api/v1/admin/migrate", "httpMethod": "POST", "headers": {"x-admin-key": "${{ secrets.ADMIN_MIGRATE_KEY }}"}}' \
+            --cli-binary-format raw-in-base64-out \
+            response.json
+          cat response.json
+
+      - name: Wait for Lambda update to complete
+        run: |
+          aws lambda wait function-updated \
+            --function-name acollya-api-${{ steps.stage.outputs.stage }}
+          aws lambda wait function-updated \
+            --function-name acollya-chat-${{ steps.stage.outputs.stage }}
+
+      - name: Smoke test (health check)
+        run: |
+          STAGE=${{ steps.stage.outputs.stage }}
+          # API endpoint is stored as GitHub secret after first CDK deploy
+          curl -f "${{ secrets.API_ENDPOINT }}/health" || exit 1
+          echo "Health check passed."

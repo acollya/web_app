@@ -1,0 +1,16 @@
+-r requirements.txt
+
+# ── Testing ───────────────────────────────────────────────────────────────────
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0
+httpx==0.27.2               # TestClient for FastAPI
+factory-boy==3.3.1          # fixtures
+aiosqlite==0.20.0           # async SQLite driver for in-memory test DB
+
+# ── Linting & Formatting ──────────────────────────────────────────────────────
+ruff==0.8.4
+mypy==1.14.0
+
+# ── Local DB & Cache (Docker alternatives) ────────────────────────────────────
+python-dotenv==1.0.1

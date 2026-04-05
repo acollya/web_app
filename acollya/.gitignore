@@ -1,0 +1,42 @@
+# ── Chaves e segredos ─────────────────────────────────────────────────────────
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.egg
+
+# ── Node / React Native ───────────────────────────────────────────────────────
+node_modules/
+.expo/
+dist/
+*.tgz
+
+# ── CDK / Infra ───────────────────────────────────────────────────────────────
+acollya-infra/cdk.out/
+acollya-infra/node_modules/
+
+# ── IDEs e OS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+Thumbs.db
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
