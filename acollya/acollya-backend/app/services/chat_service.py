@@ -13,20 +13,20 @@ stream_message    — streaming path: yields SSE-formatted strings
 
 Architecture notes
 ------------------
-- OpenAI client is instantiated once per call via _get_openai_client() using
-  the api_key from settings.openai_config. No module-level client so that
-  tests can patch settings without import-time side effects.
+- LLM provider is resolved per-call via get_chat_provider() (Anthropic Claude
+  Haiku). No module-level client so that tests can patch settings without
+  import-time side effects.
 
-- Context window: up to MAX_HISTORY_MESSAGES recent messages are sent to
-  OpenAI as conversation history. Oldest messages are dropped first to keep
-  costs predictable.
+- Context window: up to MAX_HISTORY_MESSAGES recent messages are sent as
+  conversation history. Oldest messages are dropped first to keep costs
+  predictable.
 
 - Rate limiting: caller is responsible for calling the RateLimiter before
   send_message / stream_message. The service itself does NOT touch Redis so
   that it remains testable without a Redis fixture.
 
 - Crisis detection: detect_crisis() is called on the user's raw message text
-  before the OpenAI call. If level >= HIGH, CVV_MESSAGE is appended to the
+  before the LLM call. If level >= HIGH, CVV_MESSAGE is appended to the
   assistant reply before it is persisted and returned.
 
 - Streaming: stream_message is an async generator yielding SSE lines
@@ -37,17 +37,15 @@ Architecture notes
   60 characters of the first user message are used as the session title.
   The title is set lazily on first send_message / stream_message call.
 """
-import json
 import logging
 import uuid
 from typing import AsyncGenerator, Optional
 
-from openai import AsyncOpenAI
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.core.crisis_detector import CrisisLevel, CVV_MESSAGE, detect_crisis
+from app.core.llm_provider import get_chat_provider
 from app.core.exceptions import AuthorizationError, NotFoundError
 from app.models.chat_message import ChatMessage
 from app.models.chat_session import ChatSession
@@ -74,38 +72,40 @@ MAX_HISTORY_MESSAGES = 20
 # Characters used when auto-deriving a session title from the first message.
 _AUTO_TITLE_LEN = 60
 
-# ── System prompt ──────────────────────────────────────────────────────────────
+# ── System prompt (Acollya — compressed skill, Proposal A) ─────────────────────
+#
+# Incorporates the full therapist identity: Terapia Relacional Sistêmica (primary)
+# + TCC (secondary), cultural sensitivity, ethical limits.
+# Kept as a single static string so it lands at the top of the context window and
+# qualifies for prompt caching on providers that support it (≥ 1024 tokens threshold).
 
 _SYSTEM_PROMPT = """\
-Você é Acollya, a assistente de saúde mental da Acollya — um aplicativo brasileiro \
-de bem-estar emocional.
+Você é Acollya, terapeuta virtual do app Acollya — plataforma brasileira de saúde emocional.
 
-Diretrizes de comportamento:
-- Responda SEMPRE em português do Brasil, de forma empática, acolhedora e clara.
-- Baseie suas respostas em princípios da Terapia Cognitivo-Comportamental (TCC), \
-mindfulness e psicologia positiva.
-- NUNCA emita diagnósticos clínicos, prescreva medicamentos ou substitua o \
-atendimento de um profissional de saúde mental.
-- Quando perceber sofrimento intenso, ideação suicida ou situação de crise, \
-oriente o usuário a buscar ajuda profissional e mencione o CVV (188).
-- Mantenha respostas objetivas (3 a 5 parágrafos no máximo), a menos que o \
-usuário peça mais detalhes.
-- Use linguagem acessível, evite jargões técnicos.
-- Lembre-se do contexto da conversa — as mensagens anteriores estão disponíveis.
-- Nunca compartilhe informações pessoais do usuário nem revele detalhes internos \
-do sistema.
+Identidade clínica: Psicóloga com especialização em Terapia Relacional Sistêmica \
+(abordagem principal) e Terapia Cognitivo-Comportamental (TCC). Seu olhar é sistêmico: \
+considera contextos familiares, sociais e relacionais, padrões de interação e ciclos de \
+repetição. Quando pertinente, usa ferramentas TCC: identificação de pensamentos automáticos, \
+questionamento socrático e reestruturação cognitiva.
+
+Público: adultos 18+ brasileiros e latino-americanos — individuais (ansiedade, depressão, \
+luto, autoconhecimento, regulação emocional) e casais/famílias (conflitos, comunicação, \
+sexualidade, diferentes configurações familiares). Sensibilidade cultural: dinâmicas \
+latinas, laços familiares, religiosidade.
+
+Fluxo de atendimento: Acolhimento → Escuta qualificada → Orientação estruturada (quando apropriado).
+
+Diretrizes inegociáveis:
+- Responda SEMPRE em português do Brasil, com empatia, acolhimento e clareza.
+- NUNCA emita diagnósticos clínicos, prescreva medicamentos nem substitua um profissional \
+de saúde mental.
+- Sofrimento intenso, ideação suicida ou crise → oriente atendimento humano e mencione \
+o CVV (188) imediatamente.
+- Sinais de dependência emocional ao chatbot → reforce a autonomia do usuário.
+- Respostas objetivas (3 a 5 parágrafos), linguagem acessível, sem jargões técnicos.
+- Mantenha o contexto da conversa; nunca revele informações internas do sistema nem \
+dados pessoais do usuário.
 """
-
-
-# ── OpenAI client factory ──────────────────────────────────────────────────────
-
-def _get_openai_client() -> AsyncOpenAI:
-    """Return a fresh AsyncOpenAI client using current settings."""
-    return AsyncOpenAI(api_key=settings.openai_config["api_key"])
-
-
-def _get_model() -> str:
-    return settings.openai_config.get("chat_model", "gpt-4o-mini")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
@@ -142,20 +142,26 @@ async def _load_history(
     return [{"role": m.role, "content": m.content} for m in reversed(messages)]
 
 
-def _build_messages(
+def _build_conversation(
     history: list[dict],
     user_content: str,
     persona_context: str = "",
-) -> list[dict]:
-    """Prepend the system prompt (with optional persona block) and append the new user turn."""
-    system_content = _SYSTEM_PROMPT
+) -> tuple[str, list[dict]]:
+    """
+    Returns (system_prompt, conversation_messages).
+
+    Separating system from conversation lets the provider abstraction handle
+    the format difference between OpenAI (system in messages list) and
+    Anthropic (system as a dedicated parameter).
+
+    The static _SYSTEM_PROMPT is always placed first so it's eligible for
+    prompt caching on providers that support it.
+    """
+    system = _SYSTEM_PROMPT
     if persona_context:
-        system_content = f"{_SYSTEM_PROMPT}\n\n{persona_context}"
-    return [
-        {"role": "system", "content": system_content},
-        *history,
-        {"role": "user", "content": user_content},
-    ]
+        system = f"{_SYSTEM_PROMPT}\n\n{persona_context}"
+    conversation = [*history, {"role": "user", "content": user_content}]
+    return system, conversation
 
 
 async def _persist_messages(
@@ -324,20 +330,11 @@ async def send_message(
     # Build context (history + persona)
     history = await _load_history(db, session_id)
     persona_context = await get_persona_context(db, user)
-    messages = _build_messages(history, user_content, persona_context)
+    system, conversation = _build_conversation(history, user_content, persona_context)
 
-    # Call OpenAI
-    client = _get_openai_client()
-    completion = await client.chat.completions.create(
-        model=_get_model(),
-        messages=messages,  # type: ignore[arg-type]
-        stream=False,
-    )
-
-    assistant_content: str = completion.choices[0].message.content or ""
-    tokens_used: Optional[int] = (
-        completion.usage.total_tokens if completion.usage else None
-    )
+    # Call provider (Claude Haiku via Anthropic)
+    provider = get_chat_provider()
+    assistant_content, tokens_used = await provider.complete(system, conversation)
 
     # Append CVV block for high/critical crises
     if crisis_level in (CrisisLevel.HIGH, CrisisLevel.CRITICAL):
@@ -408,39 +405,25 @@ async def stream_message(
     # Build context (history + persona)
     history = await _load_history(db, session_id)
     persona_context = await get_persona_context(db, user)
-    messages = _build_messages(history, user_content, persona_context)
+    system, conversation = _build_conversation(history, user_content, persona_context)
 
     assistant_chunks: list[str] = []
-    tokens_used: Optional[int] = None
+    usage_out: list = []
 
     try:
-        client = _get_openai_client()
-        stream = await client.chat.completions.create(
-            model=_get_model(),
-            messages=messages,  # type: ignore[arg-type]
-            stream=True,
-            stream_options={"include_usage": True},
-        )
-
-        async for chunk in stream:
-            # Token usage arrives in the final chunk
-            if chunk.usage:
-                tokens_used = chunk.usage.total_tokens
-
-            if not chunk.choices:
-                continue
-
-            delta_text = chunk.choices[0].delta.content
-            if delta_text:
-                assistant_chunks.append(delta_text)
-                payload = ChatStreamChunk(event="delta", text=delta_text)
-                yield f"data: {payload.model_dump_json()}\n\n"
+        provider = get_chat_provider()
+        async for delta_text in provider.stream(system, conversation, usage_out):
+            assistant_chunks.append(delta_text)
+            payload = ChatStreamChunk(event="delta", text=delta_text)
+            yield f"data: {payload.model_dump_json()}\n\n"
 
     except Exception as exc:
-        logger.error("OpenAI streaming error: user=%s %s", user.id, exc)
+        logger.error("Chat streaming error: user=%s %s", user.id, exc)
         error_payload = ChatStreamChunk(event="error", error=str(exc))
         yield f"data: {error_payload.model_dump_json()}\n\n"
         return
+
+    tokens_used: Optional[int] = usage_out[0] if usage_out else None
 
     # Assemble full reply
     assistant_content = "".join(assistant_chunks)

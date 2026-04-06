@@ -26,12 +26,11 @@ import logging
 import uuid
 from typing import Optional
 
-from openai import AsyncOpenAI
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.llm_provider import get_insight_provider
 from app.models.journal_entry import JournalEntry
 from app.models.user import User
 from app.schemas.journal import (
@@ -209,20 +208,13 @@ async def generate_reflection(
     if str(entry.user_id) != str(user.id):
         raise AuthorizationError("This entry does not belong to you")
 
-    client = AsyncOpenAI(api_key=settings.openai_config["api_key"])
-    model = settings.openai_config.get("chat_model", "gpt-4o-mini")
-
-    completion = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _REFLECTION_SYSTEM_PROMPT},
-            {"role": "user", "content": entry.content},
-        ],
-        stream=False,
+    provider = get_insight_provider()
+    reflection_text, tokens_used = await provider.complete(
+        system=_REFLECTION_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": entry.content}],
     )
 
-    reflection: str = completion.choices[0].message.content or ""
-    entry.ai_reflection = reflection.strip()
+    entry.ai_reflection = reflection_text.strip()
 
     await db.commit()
     await db.refresh(entry)
@@ -231,6 +223,6 @@ async def generate_reflection(
         "Journal reflection generated: user=%s entry=%s tokens=%s",
         user.id,
         entry_id,
-        completion.usage.total_tokens if completion.usage else None,
+        tokens_used,
     )
     return JournalEntryResponse.model_validate(entry)

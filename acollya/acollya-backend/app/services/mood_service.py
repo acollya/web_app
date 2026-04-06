@@ -31,12 +31,11 @@ from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
-from openai import AsyncOpenAI
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.core.exceptions import AuthorizationError, NotFoundError
+from app.core.llm_provider import get_insight_provider
 from app.models.mood_checkin import MoodCheckin
 from app.models.user import User
 from app.services.persona_service import get_persona_context
@@ -286,20 +285,13 @@ async def generate_ai_insight(
     if persona_context:
         system_content = f"{_INSIGHT_SYSTEM_PROMPT}\n\n{persona_context}"
 
-    client = AsyncOpenAI(api_key=settings.openai_config["api_key"])
-    model = settings.openai_config.get("chat_model", "gpt-4o-mini")
-
-    completion = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": user_message},
-        ],
-        stream=False,
+    provider = get_insight_provider()
+    insight_text, tokens_used = await provider.complete(
+        system=system_content,
+        messages=[{"role": "user", "content": user_message}],
     )
 
-    insight: str = completion.choices[0].message.content or ""
-    checkin.ai_insight = insight.strip()
+    checkin.ai_insight = insight_text.strip()
 
     await db.commit()
     await db.refresh(checkin)
@@ -308,7 +300,7 @@ async def generate_ai_insight(
         "Mood AI insight generated: user=%s checkin=%s tokens=%s",
         user.id,
         checkin_id,
-        completion.usage.total_tokens if completion.usage else None,
+        tokens_used,
     )
     return MoodCheckinResponse.model_validate(checkin)
 

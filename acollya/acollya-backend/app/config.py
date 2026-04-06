@@ -67,7 +67,13 @@ class Settings(BaseSettings):
 
     openai_api_key: str = ""
     openai_chat_model: str = "gpt-4o-mini"
+    openai_insight_model: str = "gpt-4.1-mini"
     openai_embedding_model: str = "text-embedding-3-small"
+
+    # ── Anthropic ─────────────────────────────────────────────────────────────
+    anthropic_secret_arn: str = "acollya/dev/anthropic"
+    anthropic_api_key: str = ""
+    anthropic_chat_model: str = "claude-haiku-4-5-20251001"
 
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -135,11 +141,27 @@ class Settings(BaseSettings):
     def openai_config(self) -> dict:
         """OpenAI config from Secrets Manager or env vars."""
         if self.openai_secret_arn and self.stage != "dev":
-            return self._get_secret(self.openai_secret_arn)
+            secret = self._get_secret(self.openai_secret_arn)
+            # Secrets Manager may not have insight_model — fall back to default
+            secret.setdefault("insight_model", self.openai_insight_model)
+            return secret
         return {
             "api_key": self.openai_api_key,
             "chat_model": self.openai_chat_model,
+            "insight_model": self.openai_insight_model,
             "embedding_model": self.openai_embedding_model,
+        }
+
+    @cached_property
+    def anthropic_config(self) -> dict:
+        """Anthropic config from Secrets Manager or env vars."""
+        if self.anthropic_secret_arn and self.stage != "dev":
+            secret = self._get_secret(self.anthropic_secret_arn)
+            secret.setdefault("chat_model", self.anthropic_chat_model)
+            return secret
+        return {
+            "api_key": self.anthropic_api_key,
+            "chat_model": self.anthropic_chat_model,
         }
 
     @cached_property
