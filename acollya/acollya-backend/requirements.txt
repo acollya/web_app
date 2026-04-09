@@ -28,7 +28,7 @@ redis[hiredis]==5.2.1
 
 # ── AI ────────────────────────────────────────────────────────────────────────
 openai==1.58.1
-anthropic==0.40.0           # Claude Haiku — main chat provider
+anthropic==0.51.0           # Claude Haiku — chat + insight/reflection provider (extended thinking)
 
 # ── Payments ─────────────────────────────────────────────────────────────────
 stripe==11.4.0

@@ -25,7 +25,7 @@ class Subscription(Base):
     __tablename__ = "subscriptions"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"))
     provider: Mapped[str] = mapped_column(Text, nullable=False, default="stripe")
     stripe_subscription_id: Mapped[Optional[str]] = mapped_column(Text, unique=True, nullable=True)
     stripe_price_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

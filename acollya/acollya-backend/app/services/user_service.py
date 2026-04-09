@@ -58,6 +58,8 @@ async def delete_me(db: AsyncSession, user: User) -> None:
     user.stripe_customer_id = None
     user.revenue_cat_id = None
     user.is_active = False
+    user.is_anonymized = True
+    user.anonymized_at = datetime.now(UTC)
 
     await db.commit()
     logger.info("User %s anonymised (LGPD deletion request)", user.id)

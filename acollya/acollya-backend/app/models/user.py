@@ -28,18 +28,21 @@ class User(Base):
     push_token_fcm: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     push_token_apns: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    is_anonymized: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    anonymized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     terms_accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     terms_accepted_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Relationships
-    subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    mood_checkins: Mapped[list["MoodCheckin"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    journal_entries: Mapped[list["JournalEntry"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    chat_sessions: Mapped[list["ChatSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    appointments: Mapped[list["Appointment"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    persona_facts: Mapped[list["UserPersonaFact"]] = relationship(back_populates="user", cascade="all, delete-orphan", lazy="noload")
+    # Relationships — sem cascade delete: registros do usuário são preservados
+    # para anonimização LGPD e eventual fine-tuning de SLMs.
+    subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user", cascade="save-update, merge")
+    mood_checkins: Mapped[list["MoodCheckin"]] = relationship(back_populates="user", cascade="save-update, merge")
+    journal_entries: Mapped[list["JournalEntry"]] = relationship(back_populates="user", cascade="save-update, merge")
+    chat_sessions: Mapped[list["ChatSession"]] = relationship(back_populates="user", cascade="save-update, merge")
+    appointments: Mapped[list["Appointment"]] = relationship(back_populates="user", cascade="save-update, merge")
+    persona_facts: Mapped[list["UserPersonaFact"]] = relationship(back_populates="user", cascade="save-update, merge", lazy="noload")
 
     @property
     def is_premium(self) -> bool:

@@ -13,7 +13,7 @@ class UserSession(Base):
     __tablename__ = "user_sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"))
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"))
     session_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     login_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     logout_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)

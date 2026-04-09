@@ -1,12 +1,10 @@
 """
 Mood check-in service — all DB operations for /mood endpoints.
 
-create_checkin      — insert a new MoodCheckin row
+create_checkin      — insert a new MoodCheckin row and generate AI insight inline
 list_checkins       — paginated history for a user
 get_insights        — aggregated stats for week/month/year (pure DB, no AI)
-generate_ai_insight — call OpenAI with recent history to produce a
-                      personalised insight; persists in MoodCheckin.ai_insight
-                      (Phase 2)
+generate_ai_insight — (re)generate AI insight for an existing check-in (idempotent)
 
 Insight periods:
   week  = last 7 days
@@ -20,10 +18,18 @@ Streak calculation:
   Counts consecutive distinct calendar days (user's UTC date) going backwards
   from today that have at least one check-in.
 
-AI insight prompt strategy:
-  The model receives the current check-in (mood + intensity + note) plus up to
-  INSIGHT_HISTORY_DAYS days of recent check-in summaries as context, so the
-  insight can acknowledge patterns rather than treating each entry in isolation.
+AI insight strategy:
+  Generated synchronously at save time — no button required.
+  Uses Claude Haiku with extended thinking for deeper pattern analysis.
+  If the AI call fails for any reason the check-in is still saved; the
+  insight will simply be absent (null) until a retry succeeds.
+
+  Context sent to the model:
+    - The current check-in (mood, intensity, note).
+    - Up to INSIGHT_HISTORY_DAYS days of recent check-in summaries.
+    - Up to 3 recent journal entries (last 7 days, 150-char snippets).
+    - Semantically relevant fragments from chat/journal/mood via RAG.
+    - User persona context for personalisation.
 """
 import logging
 import uuid
@@ -35,10 +41,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AuthorizationError, NotFoundError
-from app.core.llm_provider import get_insight_provider
+from app.core.llm_provider import get_insight_provider, _INSIGHT_MAX_TOKENS
+from app.models.journal_entry import JournalEntry
 from app.models.mood_checkin import MoodCheckin
 from app.models.user import User
 from app.services.persona_service import get_persona_context
+from app.services.rag_service import embed_and_store, retrieve_context
 from app.schemas.mood import (
     MoodCheckinCreate,
     MoodCheckinResponse,
@@ -62,17 +70,157 @@ _PERIOD_DAYS: dict[str, int] = {
 INSIGHT_HISTORY_DAYS = 7
 
 _INSIGHT_SYSTEM_PROMPT = """\
-Você é um assistente de bem-estar emocional empático e especializado em \
-Terapia Cognitivo-Comportamental (TCC).
-O usuário registrou um check-in de humor. Com base nesse check-in e no \
-histórico recente fornecido, escreva um insight curto (2 a 4 frases) em \
-português do Brasil que:
-1. Reconheça o estado emocional atual de forma acolhedora.
-2. Aponte (com gentileza) algum padrão ou tendência observada no histórico, \
-se houver.
-3. Sugira uma ação pequena e concreta que possa ajudar.
-Seja breve, caloroso e direto. Não use listas, subtítulos nem markdown.
+Você é um assistente de bem-estar emocional profundamente empático, especializado em \
+Terapia Cognitivo-Comportamental (TCC) e escuta ativa.
+
+O usuário acaba de registrar um check-in de humor. Você receberá:
+- O check-in atual (humor, intensidade, nota opcional).
+- O histórico de check-ins dos últimos 7 dias.
+- Entradas recentes do diário, quando disponíveis.
+- Trechos relevantes de conversas anteriores, quando disponíveis.
+
+Ao construir o insight, integre todas as fontes disponíveis:
+- Qual é a qualidade e intensidade da emoção relatada agora?
+- Existe algum padrão recorrente ou tendência nos últimos dias (melhora, piora, oscilação)?
+- O diário ou as conversas recentes revelam um contexto, gatilho ou tema que se conecta \
+ao estado emocional atual?
+- Qual seria a ação mais gentil e concreta para apoiar esse momento?
+
+Escreva uma resposta curta (2 a 4 frases) em português do Brasil que:
+1. Reconheça o estado emocional atual de forma acolhedora e específica (não genérica).
+2. Aponte com delicadeza algum padrão, mudança ou conexão observada entre as fontes, \
+se houver — sem citar explicitamente "no diário" ou "na conversa".
+3. Sugira uma ação pequena, concreta e realista que possa ajudar agora.
+
+Seja caloroso, direto e humano. Não use listas, subtítulos nem markdown. \
+Escreva como se estivesse conversando com a pessoa, não a avaliando.
 """
+
+
+# ── Private helpers ───────────────────────────────────────────────────────────
+
+async def _build_insight_message(
+    db: AsyncSession, user: User, checkin: MoodCheckin
+) -> str:
+    """
+    Monta o user message para a chamada de insight.
+
+    Inclui:
+    - Check-in atual (humor, intensidade, nota)
+    - Histórico de check-ins dos últimos 7 dias
+    - Entradas de diário dos últimos 7 dias (até 3, snippet de 150 chars)
+    """
+    cutoff = datetime.now(UTC) - timedelta(days=INSIGHT_HISTORY_DAYS)
+
+    # ── Histórico de humor ────────────────────────────────────────────────────
+    history_result = await db.execute(
+        select(MoodCheckin)
+        .where(
+            MoodCheckin.user_id == user.id,
+            MoodCheckin.created_at >= cutoff,
+            MoodCheckin.id != checkin.id,
+        )
+        .order_by(MoodCheckin.created_at.desc())
+        .limit(20)
+    )
+    history_rows: list[MoodCheckin] = list(history_result.scalars().all())
+
+    history_lines: list[str] = []
+    for h in reversed(history_rows):
+        day = h.created_at.strftime("%d/%m")
+        note_snippet = f" — {h.note[:80]}" if h.note else ""
+        history_lines.append(
+            f"  {day}: {h.mood} (intensidade {h.intensity}/5){note_snippet}"
+        )
+    history_text = (
+        "Histórico de humor (últimos 7 dias):\n" + "\n".join(history_lines)
+        if history_lines
+        else "Sem check-ins anteriores nos últimos 7 dias."
+    )
+
+    # ── Entradas de diário recentes ───────────────────────────────────────────
+    journal_result = await db.execute(
+        select(JournalEntry)
+        .where(
+            JournalEntry.user_id == user.id,
+            JournalEntry.created_at >= cutoff,
+        )
+        .order_by(JournalEntry.created_at.desc())
+        .limit(3)
+    )
+    journal_rows: list[JournalEntry] = list(journal_result.scalars().all())
+
+    journal_text = ""
+    if journal_rows:
+        journal_lines: list[str] = []
+        for j in reversed(journal_rows):
+            day = j.created_at.strftime("%d/%m")
+            snippet = j.content[:150].replace("\n", " ")
+            label = j.title or "Diário"
+            journal_lines.append(f'  {day} [{label}]: "{snippet}…"')
+        journal_text = "\n\nEntradas do diário (últimos 7 dias):\n" + "\n".join(journal_lines)
+
+    # ── Monta mensagem final ──────────────────────────────────────────────────
+    note_text = f"\nNota do usuário: {checkin.note}" if checkin.note else ""
+    return (
+        f"Check-in atual: {checkin.mood} (intensidade {checkin.intensity}/5)"
+        f"{note_text}\n\n{history_text}{journal_text}"
+    )
+
+
+async def _run_insight(db: AsyncSession, user: User, checkin: MoodCheckin) -> None:
+    """
+    Generate and persist the AI insight for a check-in.
+
+    Modifies checkin.ai_insight and commits. Silently logs errors so the
+    caller (create_checkin) is never blocked by AI failures.
+    """
+    try:
+        user_message = await _build_insight_message(db, user, checkin)
+
+        # Query RAG composta — foca em fragmentos relacionados ao estado emocional atual
+        rag_query = f"{checkin.mood} (intensidade {checkin.intensity}/5)"
+        if checkin.note:
+            rag_query += f". {checkin.note}"
+
+        persona_context = await get_persona_context(db, user)
+        rag_context = await retrieve_context(db, user, rag_query)
+
+        # Blocos nomeados — o modelo atende melhor a seções com cabeçalhos distintos
+        sections: list[str] = []
+        if persona_context:
+            sections.append(f"## Perfil do usuário\n{persona_context}")
+        if rag_context:
+            sections.append(f"## Histórico relevante de conversas e registros\n{rag_context}")
+        system_content = (
+            _INSIGHT_SYSTEM_PROMPT + "\n\n" + "\n\n".join(sections)
+            if sections else _INSIGHT_SYSTEM_PROMPT
+        )
+
+        provider = get_insight_provider()
+        insight_text, tokens_used = await provider.complete(
+            system=system_content,
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=_INSIGHT_MAX_TOKENS,
+        )
+
+        checkin.ai_insight = insight_text.strip()
+        await db.commit()
+        await db.refresh(checkin)
+
+        logger.info(
+            "Mood AI insight generated: user=%s checkin=%s tokens=%s",
+            user.id,
+            checkin.id,
+            tokens_used,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Mood AI insight failed (non-blocking): user=%s checkin=%s error=%s",
+            user.id,
+            checkin.id,
+            exc,
+        )
 
 
 # ── Create ─────────────────────────────────────────────────────────────────────
@@ -81,10 +229,13 @@ async def create_checkin(
     db: AsyncSession, user: User, data: MoodCheckinCreate
 ) -> MoodCheckinResponse:
     """
-    Persist a new mood check-in.
+    Persist a new mood check-in and generate an AI insight inline.
 
     Secondary moods are appended to the note as a structured prefix so they
     are searchable and not lost, while keeping the schema simple.
+
+    The AI insight is generated synchronously after the check-in is saved.
+    If the AI call fails the check-in is still returned — ai_insight will be null.
     """
     note = data.note or ""
     if data.secondary_moods:
@@ -102,6 +253,15 @@ async def create_checkin(
     await db.refresh(checkin)
 
     logger.info("Mood check-in created: user=%s mood=%s", user.id, data.mood)
+
+    # Embedding para RAG — texto combinado de mood + nota
+    embed_text = f"{checkin.mood} (intensidade {checkin.intensity}/5)"
+    if checkin.note:
+        embed_text += f". {checkin.note}"
+    await embed_and_store(db, checkin.id, "mood_checkins", embed_text)
+
+    await _run_insight(db, user, checkin)
+
     return MoodCheckinResponse.model_validate(checkin)
 
 
@@ -218,21 +378,15 @@ async def get_insights(
     )
 
 
-# ── AI insight (Phase 2) ───────────────────────────────────────────────────────
+# ── AI insight — idempotent regeneration ──────────────────────────────────────
 
 async def generate_ai_insight(
     db: AsyncSession, user: User, checkin_id: str
 ) -> MoodCheckinResponse:
     """
-    Generate a personalised AI insight for a mood check-in and persist it in
-    MoodCheckin.ai_insight.
+    (Re)generate the AI insight for an existing check-in and persist it.
 
-    Context sent to the model:
-      - The target check-in (mood, intensity, note).
-      - Up to INSIGHT_HISTORY_DAYS days of recent check-ins (summarised as
-        plain text) to allow the model to reference patterns.
-
-    Idempotent: calling again overwrites the previous insight.
+    Idempotent — calling again overwrites the previous insight.
     Raises NotFoundError / AuthorizationError when appropriate.
     """
     result = await db.execute(
@@ -245,63 +399,7 @@ async def generate_ai_insight(
     if str(checkin.user_id) != str(user.id):
         raise AuthorizationError("This check-in does not belong to you")
 
-    # Load recent history for context (excluding the target check-in itself)
-    cutoff = datetime.now(UTC) - timedelta(days=INSIGHT_HISTORY_DAYS)
-    history_result = await db.execute(
-        select(MoodCheckin)
-        .where(
-            MoodCheckin.user_id == user.id,
-            MoodCheckin.created_at >= cutoff,
-            MoodCheckin.id != checkin.id,
-        )
-        .order_by(MoodCheckin.created_at.desc())
-        .limit(20)
-    )
-    history_rows: list[MoodCheckin] = list(history_result.scalars().all())
-
-    # Build a concise plain-text summary of recent check-ins
-    history_lines: list[str] = []
-    for h in reversed(history_rows):
-        day = h.created_at.strftime("%d/%m")
-        note_snippet = f" — {h.note[:80]}" if h.note else ""
-        history_lines.append(
-            f"  {day}: {h.mood} (intensidade {h.intensity}/5){note_snippet}"
-        )
-    history_text = (
-        "Histórico recente (últimos 7 dias):\n" + "\n".join(history_lines)
-        if history_lines
-        else "Sem check-ins anteriores nos últimos 7 dias."
-    )
-
-    note_text = f"\nNota do usuário: {checkin.note}" if checkin.note else ""
-    user_message = (
-        f"Check-in atual: {checkin.mood} (intensidade {checkin.intensity}/5){note_text}\n\n"
-        f"{history_text}"
-    )
-
-    # Busca persona para personalizar o insight
-    persona_context = await get_persona_context(db, user)
-    system_content = _INSIGHT_SYSTEM_PROMPT
-    if persona_context:
-        system_content = f"{_INSIGHT_SYSTEM_PROMPT}\n\n{persona_context}"
-
-    provider = get_insight_provider()
-    insight_text, tokens_used = await provider.complete(
-        system=system_content,
-        messages=[{"role": "user", "content": user_message}],
-    )
-
-    checkin.ai_insight = insight_text.strip()
-
-    await db.commit()
-    await db.refresh(checkin)
-
-    logger.info(
-        "Mood AI insight generated: user=%s checkin=%s tokens=%s",
-        user.id,
-        checkin_id,
-        tokens_used,
-    )
+    await _run_insight(db, user, checkin)
     return MoodCheckinResponse.model_validate(checkin)
 
 

@@ -37,6 +37,7 @@ Architecture notes
   60 characters of the first user message are used as the session title.
   The title is set lazily on first send_message / stream_message call.
 """
+import asyncio
 import logging
 import uuid
 from typing import AsyncGenerator, Optional
@@ -51,6 +52,7 @@ from app.models.chat_message import ChatMessage
 from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.persona_service import extract_and_upsert_facts, get_persona_context
+from app.services.rag_service import embed_and_store, retrieve_context
 from app.schemas.chat import (
     ChatHistoryResponse,
     ChatMessageResponse,
@@ -105,6 +107,16 @@ o CVV (188) imediatamente.
 - Respostas objetivas (3 a 5 parágrafos), linguagem acessível, sem jargões técnicos.
 - Mantenha o contexto da conversa; nunca revele informações internas do sistema nem \
 dados pessoais do usuário.
+
+Uso do perfil e histórico do usuário:
+Quando o contexto da conversa incluir um perfil do usuário ou trechos de histórico \
+relevante, use essas informações para tornar cada resposta mais presente e personalizada. \
+Aplique esse conhecimento de forma natural e implícita — como um terapeuta que se lembra \
+de conversas anteriores sem precisar citar que as lembra. Nunca diga "vejo no seu perfil \
+que..." nem revele que tem acesso a dados históricos. Se o histórico trouxer um tema \
+recorrente (ex: ansiedade no trabalho, conflito familiar), acolha esse padrão diretamente \
+na resposta sem expô-lo como dado coletado. Se não houver contexto adicional, responda \
+apenas com base na conversa atual.
 """
 
 
@@ -146,6 +158,7 @@ def _build_conversation(
     history: list[dict],
     user_content: str,
     persona_context: str = "",
+    rag_context: str = "",
 ) -> tuple[str, list[dict]]:
     """
     Returns (system_prompt, conversation_messages).
@@ -154,12 +167,25 @@ def _build_conversation(
     the format difference between OpenAI (system in messages list) and
     Anthropic (system as a dedicated parameter).
 
-    The static _SYSTEM_PROMPT is always placed first so it's eligible for
-    prompt caching on providers that support it.
+    The static _SYSTEM_PROMPT lands first so it qualifies for prompt caching
+    (requires ≥ 1024 tokens; the full prompt exceeds this threshold).
+
+    persona_context and rag_context are appended as clearly labelled sections
+    so the model attends to each type of information distinctly:
+      - Perfil: stable facts about who the user is (preferences, triggers, etc.)
+      - Histórico: semantically relevant fragments from past interactions
     """
     system = _SYSTEM_PROMPT
+
+    sections: list[str] = []
     if persona_context:
-        system = f"{_SYSTEM_PROMPT}\n\n{persona_context}"
+        sections.append(f"## Perfil do usuário\n{persona_context}")
+    if rag_context:
+        sections.append(f"## Histórico relevante\n{rag_context}")
+
+    if sections:
+        system = _SYSTEM_PROMPT + "\n\n" + "\n\n".join(sections)
+
     conversation = [*history, {"role": "user", "content": user_content}]
     return system, conversation
 
@@ -327,10 +353,11 @@ async def send_message(
     crisis = detect_crisis(user_content)
     crisis_level = crisis.level
 
-    # Build context (history + persona)
+    # Build context (history + persona + RAG)
     history = await _load_history(db, session_id)
     persona_context = await get_persona_context(db, user)
-    system, conversation = _build_conversation(history, user_content, persona_context)
+    rag_context = await retrieve_context(db, user, user_content)
+    system, conversation = _build_conversation(history, user_content, persona_context, rag_context)
 
     # Call provider (Claude Haiku via Anthropic)
     provider = get_chat_provider()
@@ -348,14 +375,15 @@ async def send_message(
         db, user, session_id, user_content, assistant_content, tokens_used
     )
 
-    # Extração de persona em background (silenciosa, não bloqueia resposta)
-    await extract_and_upsert_facts(
+    # Embedding + extração de persona em background — não bloqueiam a resposta.
+    asyncio.create_task(embed_and_store(db, user_msg.id, "chat_messages", user_content))
+    asyncio.create_task(extract_and_upsert_facts(
         db=db,
         user=user,
         text_input=user_content,
         source="chat",
         source_id=user_msg.id,
-    )
+    ))
 
     logger.info(
         "Chat message sent (non-stream): user=%s session=%s tokens=%s crisis=%s",
@@ -402,10 +430,11 @@ async def stream_message(
     crisis = detect_crisis(user_content)
     crisis_level = crisis.level
 
-    # Build context (history + persona)
+    # Build context (history + persona + RAG)
     history = await _load_history(db, session_id)
     persona_context = await get_persona_context(db, user)
-    system, conversation = _build_conversation(history, user_content, persona_context)
+    rag_context = await retrieve_context(db, user, user_content)
+    system, conversation = _build_conversation(history, user_content, persona_context, rag_context)
 
     assistant_chunks: list[str] = []
     usage_out: list = []
@@ -443,24 +472,26 @@ async def stream_message(
         db, user, session_id, user_content, assistant_content, tokens_used
     )
 
-    # Extração de persona (silenciosa, após streaming concluído)
-    await extract_and_upsert_facts(
-        db=db,
-        user=user,
-        text_input=user_content,
-        source="chat",
-        source_id=user_msg.id,
-    )
-
-    logger.info(
-        "Chat message sent (stream): user=%s session=%s tokens=%s crisis=%s",
-        user.id, session_id, tokens_used, crisis_level,
-    )
-
-    # Final SSE event
+    # Envia o evento `done` imediatamente — desbloqueia a UI do cliente.
+    # Embedding e extração de persona são agendados como tasks concorrentes
+    # e rodam enquanto o cliente processa o evento (sessão DB ainda aberta).
     done_payload = ChatStreamChunk(
         event="done",
         tokens_used=tokens_used,
         crisis_level=crisis_level.value,
     )
     yield f"data: {done_payload.model_dump_json()}\n\n"
+
+    asyncio.create_task(embed_and_store(db, user_msg.id, "chat_messages", user_content))
+    asyncio.create_task(extract_and_upsert_facts(
+        db=db,
+        user=user,
+        text_input=user_content,
+        source="chat",
+        source_id=user_msg.id,
+    ))
+
+    logger.info(
+        "Chat message sent (stream): user=%s session=%s tokens=%s crisis=%s",
+        user.id, session_id, tokens_used, crisis_level,
+    )

@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     anthropic_secret_arn: str = "acollya/dev/anthropic"
     anthropic_api_key: str = ""
     anthropic_chat_model: str = "claude-haiku-4-5-20251001"
+    anthropic_insight_model: str = "claude-haiku-4-5-20251001"
 
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
@@ -158,10 +159,12 @@ class Settings(BaseSettings):
         if self.anthropic_secret_arn and self.stage != "dev":
             secret = self._get_secret(self.anthropic_secret_arn)
             secret.setdefault("chat_model", self.anthropic_chat_model)
+            secret.setdefault("insight_model", self.anthropic_insight_model)
             return secret
         return {
             "api_key": self.anthropic_api_key,
             "chat_model": self.anthropic_chat_model,
+            "insight_model": self.anthropic_insight_model,
         }
 
     @cached_property

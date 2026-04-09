@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     analytics,
     chat,
     persona,
+    media,
 )
 
 api_router = APIRouter()
@@ -46,3 +47,6 @@ api_router.include_router(chat.router,           prefix="/chat",          tags=[
 
 # ── Phase 2 — Persona / Hyperpersonalization ───────────────────────────────────
 api_router.include_router(persona.router,        prefix="/persona",       tags=["persona"])
+
+# ── Phase 3 — Media (áudio, transcrição) ──────────────────────────────────────
+api_router.include_router(media.router,          prefix="/media",         tags=["media"])

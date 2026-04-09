@@ -5,8 +5,8 @@ Design
 ------
 Two concrete providers are offered:
 
-  OpenAIProvider   — wraps AsyncOpenAI (used for mood insights & journal reflections)
-  AnthropicProvider — wraps AsyncAnthropic (used for main chat, empathy-focused)
+  OpenAIProvider    — wraps AsyncOpenAI (embeddings, fallback tasks)
+  AnthropicProvider — wraps AsyncAnthropic (chat + insights/reflections)
 
 Both expose the same two methods:
 
@@ -18,10 +18,34 @@ Both expose the same two methods:
       when the stream finishes, so the caller can read it after exhausting
       the generator.
 
+Extended thinking (AnthropicProvider only)
+------------------------------------------
+  AnthropicProvider accepts two extra constructor args:
+
+    thinking        : bool = False  — enable extended thinking
+    thinking_budget : int  = 2000   — max tokens the model may use for thinking
+
+  When thinking=True, complete() sets max_tokens = thinking_budget + base_output
+  automatically and filters out <thinking> blocks from the response, returning
+  only the final user-visible text.
+  When thinking=True, temperature is not accepted by the API and is omitted.
+
+Token budgets
+-------------
+  _CHAT_STREAM_MAX_TOKENS   = 2000  — chat streaming (respostas terapêuticas densas)
+  _INSIGHT_MAX_TOKENS       = 800   — insights e reflexões (texto curto, direto)
+  _DEFAULT_MAX_TOKENS       = 1024  — fallback para chamadas genéricas
+
+Temperature
+-----------
+  _INSIGHT_TEMPERATURE = 0.7  — aplicado em complete() quando thinking=False.
+  Reduz variância nas respostas clínicas mantendo naturalidade.
+  Não afeta chamadas com thinking ativo (ignorado pela API Anthropic).
+
 Factory helpers
 ---------------
-  get_chat_provider()    -> AnthropicProvider  (Claude Haiku)
-  get_insight_provider() -> OpenAIProvider     (GPT-4.1-mini)
+  get_chat_provider()    -> AnthropicProvider  (Claude Haiku, no thinking)
+  get_insight_provider() -> AnthropicProvider  (Claude Haiku, thinking enabled)
 
 Example usage (non-streaming)
 ------------------------------
@@ -46,7 +70,27 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Chat streaming: respostas terapêuticas podem ser densas (acolhimento + orientação).
+_CHAT_STREAM_MAX_TOKENS = 2000
+
+# Insights e reflexões: texto curto e direto — 800 tokens é mais que suficiente.
+_INSIGHT_MAX_TOKENS = 800
+
+# Fallback para chamadas genéricas (complete() sem thinking via base class).
 _DEFAULT_MAX_TOKENS = 1024
+
+# Temperature para complete() sem thinking — reduz variância em contexto clínico.
+_INSIGHT_TEMPERATURE = 0.7
+
+# Anthropic prompt-caching beta header.
+# Caches system prompt across turns of the same conversation.
+# Requires ≥ 1024 tokens in the cached block; silently skipped if not met.
+_CACHE_BETA_HEADER = {"anthropic-beta": "prompt-caching-2024-07-31"}
+
+
+def _system_blocks(system: str) -> list[dict]:
+    """Wraps the system string into a content block with cache_control."""
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
 
 # ── Base class ─────────────────────────────────────────────────────────────────
@@ -149,12 +193,30 @@ class OpenAIProvider(LLMProvider):
 
 # ── Anthropic provider ─────────────────────────────────────────────────────────
 
-class AnthropicProvider(LLMProvider):
-    """Wraps AsyncAnthropic. Used for main chat (empathy-focused, human-like tone)."""
+# Tokens reserved for the visible output when thinking is active.
+# max_tokens sent to the API = thinking_budget + _THINKING_OUTPUT_BUFFER.
+_THINKING_OUTPUT_BUFFER = 1024
 
-    def __init__(self, api_key: str, model: str) -> None:
+
+class AnthropicProvider(LLMProvider):
+    """
+    Wraps AsyncAnthropic.
+
+    Used for main chat (empathy-focused) and insight/reflection generation.
+    Optionally enables extended thinking for deeper, more nuanced outputs.
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        thinking: bool = False,
+        thinking_budget: int = 2000,
+    ) -> None:
         self._api_key = api_key
         self._model = model
+        self._thinking = thinking
+        self._thinking_budget = thinking_budget
 
     def _client(self) -> AsyncAnthropic:
         return AsyncAnthropic(api_key=self._api_key)
@@ -165,13 +227,35 @@ class AnthropicProvider(LLMProvider):
         messages: list[dict],
         max_tokens: int = _DEFAULT_MAX_TOKENS,
     ) -> tuple[str, Optional[int]]:
-        response = await self._client().messages.create(
-            model=self._model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=messages,  # type: ignore[arg-type]
-        )
-        content = response.content[0].text if response.content else ""
+        system_blocks = _system_blocks(system)
+        if self._thinking:
+            # max_tokens must exceed budget_tokens; we add a buffer for the reply.
+            effective_max = self._thinking_budget + _THINKING_OUTPUT_BUFFER
+            response = await self._client().messages.create(
+                model=self._model,
+                max_tokens=effective_max,
+                thinking={"type": "enabled", "budget_tokens": self._thinking_budget},
+                system=system_blocks,  # type: ignore[arg-type]
+                messages=messages,  # type: ignore[arg-type]
+                extra_headers=_CACHE_BETA_HEADER,
+            )
+            # Filter out thinking blocks — return only the visible text.
+            content = ""
+            for block in response.content:
+                if block.type == "text":
+                    content = block.text
+                    break
+        else:
+            response = await self._client().messages.create(
+                model=self._model,
+                max_tokens=max_tokens,
+                temperature=_INSIGHT_TEMPERATURE,
+                system=system_blocks,  # type: ignore[arg-type]
+                messages=messages,  # type: ignore[arg-type]
+                extra_headers=_CACHE_BETA_HEADER,
+            )
+            content = response.content[0].text if response.content else ""
+
         tokens: Optional[int] = None
         if response.usage:
             tokens = response.usage.input_tokens + response.usage.output_tokens
@@ -185,9 +269,10 @@ class AnthropicProvider(LLMProvider):
     ) -> AsyncGenerator[str, None]:
         async with self._client().messages.stream(
             model=self._model,
-            max_tokens=_DEFAULT_MAX_TOKENS,
-            system=system,
+            max_tokens=_CHAT_STREAM_MAX_TOKENS,
+            system=_system_blocks(system),  # type: ignore[arg-type]
             messages=messages,  # type: ignore[arg-type]
+            extra_headers=_CACHE_BETA_HEADER,
         ) as s:
             async for text in s.text_stream:
                 yield text
@@ -208,15 +293,27 @@ class AnthropicProvider(LLMProvider):
 # ── Factories ──────────────────────────────────────────────────────────────────
 
 def get_chat_provider() -> LLMProvider:
-    """Return the provider for main chat sessions (Anthropic Claude Haiku)."""
+    """Return the provider for main chat sessions (Claude Haiku, no thinking)."""
     cfg = settings.anthropic_config
     return AnthropicProvider(api_key=cfg["api_key"], model=cfg["chat_model"])
 
 
 def get_insight_provider() -> LLMProvider:
-    """Return the provider for mood insights and journal reflections (OpenAI GPT-4.1-mini)."""
-    cfg = settings.openai_config
-    return OpenAIProvider(
+    """
+    Return the provider for mood insights and journal reflections.
+
+    Uses Claude Haiku with extended thinking for deeper, more nuanced outputs
+    while keeping the same safety and PT-BR quality guarantees as the chat model.
+    thinking_budget=2000 balances quality vs. cost for short insight texts.
+
+    Callers should pass max_tokens=_INSIGHT_MAX_TOKENS (800) to complete().
+    When thinking=True the effective max is thinking_budget + _THINKING_OUTPUT_BUFFER
+    and the max_tokens argument is ignored in favour of that calculation.
+    """
+    cfg = settings.anthropic_config
+    return AnthropicProvider(
         api_key=cfg["api_key"],
-        model=cfg.get("insight_model", "gpt-4.1-mini"),
+        model=cfg.get("insight_model", "claude-haiku-4-5-20251001"),
+        thinking=True,
+        thinking_budget=2000,
     )
