@@ -2,10 +2,10 @@
 Pydantic v2 schemas for auth endpoints.
 
 Request bodies:
-  RegisterRequest, LoginRequest, RefreshRequest, GoogleAuthRequest
+  RegisterRequest, LoginRequest, RefreshRequest, GoogleAuthRequest, AppleAuthRequest
 
 Responses:
-  TokenResponse  — returned on login, register, refresh, google_auth
+  TokenResponse  — returned on login, register, refresh, google_auth, apple_auth
   MessageResponse — generic success message (e.g. logout)
 """
 import re
@@ -52,6 +52,12 @@ class RefreshRequest(BaseModel):
 
 class GoogleAuthRequest(BaseModel):
     id_token: str = Field(description="Google ID token from the client SDK")
+    terms_accepted: bool = True
+
+
+class AppleAuthRequest(BaseModel):
+    identity_token: str = Field(description="Apple identity token (JWT) from Sign in with Apple")
+    full_name: Optional[str] = Field(None, description="User's full name (only sent on first sign-in)")
     terms_accepted: bool = True
 
 

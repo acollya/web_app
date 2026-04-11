@@ -17,6 +17,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     password_hash: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     google_id: Mapped[Optional[str]] = mapped_column(Text, unique=True, nullable=True)
+    apple_id: Mapped[Optional[str]] = mapped_column(Text, unique=True, nullable=True)
     phone: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     birth_date: Mapped[Optional[datetime]] = mapped_column(Date, nullable=True)
     gender: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

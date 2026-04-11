@@ -6,6 +6,7 @@ POST /auth/login       — email+password sign-in
 POST /auth/refresh     — rotate refresh token
 POST /auth/logout      — revoke refresh token
 POST /auth/google      — Google OAuth sign-in / sign-up
+POST /auth/apple       — Apple Sign In sign-in / sign-up
 """
 from typing import Annotated
 
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, get_redis
 from app.schemas.auth import (
+    AppleAuthRequest,
     GoogleAuthRequest,
     LoginRequest,
     MessageResponse,
@@ -91,3 +93,16 @@ async def google_auth(
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
     return await auth_service.google_auth(db, redis, body)
+
+
+@router.post(
+    "/apple",
+    response_model=TokenResponse,
+    summary="Sign in or sign up with Apple identity token",
+)
+async def apple_auth(
+    body: AppleAuthRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> TokenResponse:
+    return await auth_service.apple_auth(db, redis, body)

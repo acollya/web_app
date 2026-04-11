@@ -172,3 +172,68 @@ async def verify_google_id_token(id_token: str) -> dict[str, Any]:
         raise AuthenticationError("Google token missing required fields")
 
     return data
+
+
+APPLE_KEYS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_ISSUER = "https://appleid.apple.com"
+APPLE_BUNDLE_ID = "com.acollya.app"
+
+
+async def verify_apple_identity_token(identity_token: str) -> dict[str, Any]:
+    """
+    Verify an Apple identity token (JWT) using Apple's public keys.
+
+    Returns payload with at least: { "sub": "...", "email": "..." }
+    email may be absent on subsequent sign-ins (Apple only provides it once).
+
+    Raises AuthenticationError on invalid token.
+    """
+    import json
+    import base64
+
+    # Fetch Apple's public JWKS
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            resp = await client.get(APPLE_KEYS_URL)
+            resp.raise_for_status()
+            jwks = resp.json()
+        except Exception as exc:
+            logger.error("Failed to fetch Apple public keys: %s", exc)
+            raise AuthenticationError("Could not verify Apple token") from exc
+
+    # Decode header to find the right key
+    try:
+        import json, base64
+        header_segment = identity_token.split(".")[0]
+        header_json = base64.urlsafe_b64decode(header_segment + "==")
+        header = json.loads(header_json)
+        kid = header.get("kid")
+        alg = header.get("alg", "RS256")
+    except Exception as exc:
+        raise AuthenticationError("Invalid Apple token format") from exc
+
+    # Find the matching key
+    key_data = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+    if not key_data:
+        raise AuthenticationError("Apple token key not found")
+
+    try:
+        # python-jose can decode using a JWK dict directly
+        payload = jwt.decode(
+            identity_token,
+            key_data,
+            algorithms=[alg],
+            audience=APPLE_BUNDLE_ID,
+            issuer=APPLE_ISSUER,
+        )
+    except JWTError as exc:
+        logger.warning("Apple token verification failed: %s", exc)
+        raise AuthenticationError("Invalid Apple identity token") from exc
+    except Exception as exc:
+        logger.warning("Apple token verification unexpected error: %s", exc)
+        raise AuthenticationError("Could not verify Apple token") from exc
+
+    if "sub" not in payload:
+        raise AuthenticationError("Apple token missing required fields")
+
+    return payload

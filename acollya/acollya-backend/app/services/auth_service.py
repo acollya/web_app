@@ -33,6 +33,7 @@ from app.core.auth import (
     create_refresh_token,
     decode_refresh_token,
     hash_password,
+    verify_apple_identity_token,
     verify_google_id_token,
     verify_password,
 )
@@ -42,7 +43,7 @@ from app.core.exceptions import (
     InvalidTokenError,
 )
 from app.models.user import User
-from app.schemas.auth import GoogleAuthRequest, LoginRequest, RegisterRequest, TokenResponse
+from app.schemas.auth import AppleAuthRequest, GoogleAuthRequest, LoginRequest, RegisterRequest, TokenResponse
 from app.schemas.user import UserResponse
 
 logger = logging.getLogger(__name__)
@@ -221,6 +222,58 @@ async def google_auth(
             email=email,
             name=name,
             google_id=google_id,
+            trial_ends_at=now + timedelta(days=settings.trial_days),
+            subscription_status="trialing",
+            terms_accepted=req.terms_accepted,
+            terms_accepted_date=now if req.terms_accepted else None,
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    if not user.is_active:
+        raise AuthenticationError("Account is deactivated")
+
+    access_token = create_access_token(str(user.id))
+    refresh_token, jti = create_refresh_token(str(user.id))
+    await _store_jti(redis, jti, str(user.id))
+
+    return _build_token_response(user, access_token, refresh_token, is_new_user=is_new_user)
+
+
+async def apple_auth(
+    db: AsyncSession, redis: Redis, req: AppleAuthRequest
+) -> TokenResponse:
+    apple_data = await verify_apple_identity_token(req.identity_token)
+    apple_id: str = apple_data["sub"]
+    # Apple only provides email on first sign-in
+    email: str | None = apple_data.get("email")
+
+    is_new_user = False
+
+    # Try by apple_id first
+    result = await db.execute(select(User).where(User.apple_id == apple_id))
+    user: User | None = result.scalar_one_or_none()
+
+    if not user and email:
+        # Try by email (link existing account)
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+
+    if user:
+        if not user.apple_id:
+            user.apple_id = apple_id
+            await db.commit()
+    else:
+        if not email:
+            raise AuthenticationError("Apple did not provide email — cannot create account")
+        is_new_user = True
+        name = req.full_name or email.split("@")[0]
+        now = datetime.now(UTC)
+        user = User(
+            email=email,
+            name=name,
+            apple_id=apple_id,
             trial_ends_at=now + timedelta(days=settings.trial_days),
             subscription_status="trialing",
             terms_accepted=req.terms_accepted,
