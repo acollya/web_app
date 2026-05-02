@@ -145,7 +145,7 @@ async def _revoke_user_refresh_tokens(redis: Redis, user_id: str) -> None:
                 value = await redis.get(key)
                 if value == user_id:
                     keys_to_delete.append(key)
-            if cursor == 0:
+            if int(cursor) == 0:
                 break
 
         if keys_to_delete:

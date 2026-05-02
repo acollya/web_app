@@ -28,6 +28,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_current_user, get_db, get_redis
+from app.database import AsyncSessionLocal
 from app.core.exceptions import RateLimitError
 from app.core.rate_limiter import RateLimiter
 from app.config import settings
@@ -86,7 +87,7 @@ class TTSRequest(BaseModel):
 
 
 class TTSResponse(BaseModel):
-    audio_url: str
+    url: str
     expires_in: int = _TTS_PRESIGNED_TTL
 
 
@@ -97,6 +98,15 @@ def _file_extension(filename: str | None) -> str:
         return ""
     parts = filename.rsplit(".", 1)
     return f".{parts[-1].lower()}" if len(parts) == 2 else ""
+
+
+async def _bg_extract_facts_transcription(user_id: uuid.UUID, text: str) -> None:
+    async with AsyncSessionLocal() as db:
+        from app.models.user import User as _User
+        from sqlalchemy import select as _select
+        user = await db.get(_User, user_id)
+        if user:
+            await extract_and_upsert_facts(db=db, user=user, text_input=text, source="transcription")
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -188,11 +198,9 @@ async def transcribe_audio(
         # background — alimenta hiperpersonalização e RAG sem bloquear resposta.
         if transcribed_text:
             background_tasks.add_task(
-                extract_and_upsert_facts,
-                db=db,
-                user=current_user,
-                text_input=transcribed_text,
-                source="transcription",
+                _bg_extract_facts_transcription,
+                current_user.id,
+                transcribed_text,
             )
 
         return TranscriptionResponse(text=transcribed_text)
@@ -313,4 +321,4 @@ async def text_to_speech(
             detail="Falha ao armazenar o áudio gerado. Tente novamente.",
         )
 
-    return TTSResponse(audio_url=audio_url, expires_in=_TTS_PRESIGNED_TTL)
+    return TTSResponse(url=audio_url, expires_in=_TTS_PRESIGNED_TTL)
