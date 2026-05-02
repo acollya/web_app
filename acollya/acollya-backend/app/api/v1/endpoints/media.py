@@ -16,6 +16,7 @@ Design
 - O áudio TTS é gerado em memória, enviado ao S3 e exposto via URL
   pré-assinada de 60 segundos — não persiste objeto público.
 """
+import asyncio
 import io
 import logging
 import uuid
@@ -298,7 +299,8 @@ async def text_to_speech(
     try:
         s3 = boto3.client("s3", region_name=settings.aws_region)
         key = f"tts/{current_user.id}/{uuid.uuid4()}.mp3"
-        s3.put_object(
+        await asyncio.to_thread(
+            s3.put_object,
             Bucket=settings.media_bucket,
             Key=key,
             Body=audio_bytes,
