@@ -408,39 +408,6 @@ def _build_conversation(
     return _SYSTEM_PROMPT, dynamic, conversation
 
 
-async def _persist_messages(
-    db: AsyncSession,
-    user: User,
-    session_id: uuid.UUID,
-    user_content: str,
-    assistant_content: str,
-    tokens_used: Optional[int],
-) -> tuple[ChatMessage, ChatMessage]:
-    """Save both turns to the DB and return (user_msg, assistant_msg)."""
-    user_msg = ChatMessage(
-        user_id=user.id,
-        session_id=session_id,
-        role="user",
-        content=user_content,
-        tokens_used=None,
-        cached=False,
-    )
-    assistant_msg = ChatMessage(
-        user_id=user.id,
-        session_id=session_id,
-        role="assistant",
-        content=assistant_content,
-        tokens_used=tokens_used,
-        cached=False,
-    )
-    db.add(user_msg)
-    db.add(assistant_msg)
-    await db.commit()
-    await db.refresh(user_msg)
-    await db.refresh(assistant_msg)
-    return user_msg, assistant_msg
-
-
 async def _maybe_set_title(
     db: AsyncSession, session: ChatSession, user_content: str
 ) -> None:
@@ -581,6 +548,19 @@ async def send_message(
         history, user_content, persona_context, rag_context, rolling_summary
     )
 
+    # Persist user message BEFORE the LLM call so it survives any LLM failure.
+    user_msg = ChatMessage(
+        user_id=user.id,
+        session_id=session_id,
+        role="user",
+        content=user_content,
+        tokens_used=None,
+        cached=False,
+    )
+    db.add(user_msg)
+    await db.commit()
+    await db.refresh(user_msg)
+
     # Escalate to Sonnet for high/critical crisis levels
     provider = (
         get_crisis_chat_provider()
@@ -601,10 +581,18 @@ async def send_message(
     # Auto-title
     await _maybe_set_title(db, session, user_content)
 
-    # Persist
-    user_msg, assistant_msg = await _persist_messages(
-        db, user, session_id, user_content, assistant_content, tokens_used
+    # Persist assistant message (user message was already committed above)
+    assistant_msg = ChatMessage(
+        user_id=user.id,
+        session_id=session_id,
+        role="assistant",
+        content=assistant_content,
+        tokens_used=tokens_used,
+        cached=False,
     )
+    db.add(assistant_msg)
+    await db.commit()
+    await db.refresh(assistant_msg)
 
     if background_tasks is not None:
         background_tasks.add_task(_bg_embed, user_msg.id, "chat_messages", user_content)
@@ -670,6 +658,20 @@ async def stream_message(
         history, user_content, persona_context, rag_context, rolling_summary
     )
 
+    # Persist user message BEFORE the LLM call so it is never lost on failure.
+    # A separate commit here ensures the row survives even if the LLM raises.
+    user_msg = ChatMessage(
+        user_id=user.id,
+        session_id=session_id,
+        role="user",
+        content=user_content,
+        tokens_used=None,
+        cached=False,
+    )
+    db.add(user_msg)
+    await db.commit()
+    await db.refresh(user_msg)
+
     assistant_chunks: list[str] = []
     usage_out: list = []
 
@@ -687,9 +689,19 @@ async def stream_message(
             yield f"data: {payload.model_dump_json()}\n\n"
 
     except Exception as exc:
-        logger.error("Chat streaming error: user=%s %s", user.id, exc)
-        error_payload = ChatStreamChunk(event="error", error=str(exc))
-        yield f"data: {error_payload.model_dump_json()}\n\n"
+        logger.error("stream_message LLM error: %s", exc, exc_info=True)
+        yield f"data: {ChatStreamChunk(event='error', error=str(exc)).model_dump_json()}\n\n"
+        # Guarantee CVV delivery even when the LLM fails — users in crisis must
+        # never receive only an error frame with no support information.
+        if crisis_level in (CrisisLevel.HIGH, CrisisLevel.CRITICAL):
+            cvv_chunk = ChatStreamChunk(event="delta", text=CVV_MESSAGE)
+            yield f"data: {cvv_chunk.model_dump_json()}\n\n"
+            done_chunk = ChatStreamChunk(
+                event="done",
+                tokens_used=0,
+                crisis_level=crisis_level.value,
+            )
+            yield f"data: {done_chunk.model_dump_json()}\n\n"
         return
 
     tokens_used: Optional[int] = usage_out[0] if usage_out else None
@@ -711,10 +723,17 @@ async def stream_message(
     # Auto-title
     await _maybe_set_title(db, session, user_content)
 
-    # Persist both messages
-    user_msg, _ = await _persist_messages(
-        db, user, session_id, user_content, assistant_content, tokens_used
+    # Persist assistant message (user message was already committed above)
+    assistant_msg = ChatMessage(
+        user_id=user.id,
+        session_id=session_id,
+        role="assistant",
+        content=assistant_content,
+        tokens_used=tokens_used,
+        cached=False,
     )
+    db.add(assistant_msg)
+    await db.commit()
 
     done_payload = ChatStreamChunk(
         event="done",

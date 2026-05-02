@@ -53,7 +53,6 @@ class Settings(BaseSettings):
     # ── Secrets Manager ARNs (resolved lazily) ────────────────────────────────
     jwt_secret_arn: str = "acollya/dev/jwt"
     openai_secret_arn: str = "acollya/dev/openai"
-    stripe_secret_arn: str = "acollya/dev/stripe"
 
     # ── Local dev overrides (used when stage=dev and no Secrets Manager) ──────
     jwt_private_key: str = ""
@@ -76,11 +75,6 @@ class Settings(BaseSettings):
     anthropic_chat_model: str = "claude-haiku-4-5-20251001"
     anthropic_insight_model: str = "claude-haiku-4-5-20251001"
 
-    stripe_secret_key: str = ""
-    stripe_webhook_secret: str = ""
-    stripe_monthly_price_id: str = ""
-    stripe_annual_price_id: str = ""
-
     # ── App Config ────────────────────────────────────────────────────────────
     trial_days: int = 14
     free_chat_messages_per_day: int = 20
@@ -89,24 +83,13 @@ class Settings(BaseSettings):
     # ── CORS ──────────────────────────────────────────────────────────────────
     @property
     def cors_origins(self) -> list[str]:
-        if self.stage == "prod":
-            return [
-                "https://acollya.com.br",
-                "https://www.acollya.com.br",
-                "https://app.acollya.com.br",
-            ]
-        if self.stage == "staging":
-            return [
-                "https://staging.acollya.com.br",
-                "https://app-staging.acollya.com.br",
-            ]
-        # dev: allow localhost origins for web admin/dashboard tooling.
-        # Native mobile clients do not use CORS — only browser-based tools need this.
+        # Native mobile clients do not use CORS.
+        # Only local dev tooling (Expo web, FastAPI docs) needs origins here.
+        if self.stage in ("prod", "staging"):
+            return []
         return [
-            "http://localhost:3000",
             "http://localhost:8000",
-            "http://localhost:19006",  # Expo web
-            "http://127.0.0.1:3000",
+            "http://localhost:19006",  # Expo web dev
             "http://127.0.0.1:8000",
         ]
 
@@ -178,18 +161,6 @@ class Settings(BaseSettings):
             "api_key": self.anthropic_api_key,
             "chat_model": self.anthropic_chat_model,
             "insight_model": self.anthropic_insight_model,
-        }
-
-    @cached_property
-    def stripe_config(self) -> dict:
-        """Stripe config from Secrets Manager or env vars."""
-        if self.stripe_secret_arn and self.stage != "dev":
-            return self._get_secret(self.stripe_secret_arn)
-        return {
-            "secret_key": self.stripe_secret_key,
-            "webhook_secret": self.stripe_webhook_secret,
-            "monthly_price_id": self.stripe_monthly_price_id,
-            "annual_price_id": self.stripe_annual_price_id,
         }
 
     @staticmethod

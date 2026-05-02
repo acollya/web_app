@@ -75,7 +75,6 @@ async def test_delete_me_anonymises_email(db, test_user):
 async def test_delete_me_clears_all_pii_fields(db, test_user):
     test_user.phone = "+5511999999999"
     test_user.google_id = "google_id_123"
-    test_user.stripe_customer_id = "cus_test_123"
     test_user.push_token_fcm = "fcm_token_abc"
     await db.commit()
 
@@ -89,7 +88,6 @@ async def test_delete_me_clears_all_pii_fields(db, test_user):
     assert test_user.password_hash is None
     assert test_user.push_token_fcm is None
     assert test_user.push_token_apns is None
-    assert test_user.stripe_customer_id is None
     assert test_user.revenue_cat_id is None
 
 

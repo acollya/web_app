@@ -30,9 +30,6 @@ redis[hiredis]==5.2.1
 openai==1.58.1
 anthropic==0.51.0           # Claude Haiku — chat + insight/reflection provider (extended thinking)
 
-# ── Payments ─────────────────────────────────────────────────────────────────
-stripe==11.4.0
-
 # ── Utilities ─────────────────────────────────────────────────────────────────
 httpx==0.27.2                # async HTTP client (Google OAuth, webhooks)
 python-multipart==0.0.20     # file upload support

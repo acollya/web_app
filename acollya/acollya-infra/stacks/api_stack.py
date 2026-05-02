@@ -12,7 +12,6 @@ API Gateway:
   - Routes:
       ANY /api/{proxy+}  → api_lambda
       POST /api/v1/chat/stream → chat_lambda (streaming)
-      POST /api/v1/webhooks/stripe → api_lambda (no auth required)
 
 Note on Lambda Streaming:
   AWS Lambda Response Streaming requires Lambda Function URLs or
@@ -63,13 +62,12 @@ class ApiStack(Stack):
         self.stage = stage
         is_prod = stage == "prod"
 
-        # Per-stage CORS origins — mobile apps skip CORS; this protects browser clients
-        if stage == "prod":
-            cors_origins = ["https://acollya.com.br", "https://www.acollya.com.br", "https://app.acollya.com.br"]
-        elif stage == "staging":
-            cors_origins = ["https://staging.acollya.com.br", "https://app-staging.acollya.com.br"]
+        # Mobile-only app — native clients don't send CORS preflight.
+        # Dev keeps localhost origins for tooling (Swagger UI, curl).
+        if stage in ("prod", "staging"):
+            cors_origins: list[str] = []
         else:
-            cors_origins = ["http://localhost:3000", "http://localhost:19006", "http://127.0.0.1:3000", "http://localhost:8000"]
+            cors_origins = ["http://localhost:8000", "http://localhost:19006", "http://127.0.0.1:8000"]
 
         # ── Shared environment variables ──────────────────────────────────────
         shared_env = {
@@ -85,7 +83,7 @@ class ApiStack(Stack):
             "MEDIA_BUCKET": media_bucket.bucket_name,
             "JWT_SECRET_ARN": f"acollya/{stage}/jwt",
             "OPENAI_SECRET_ARN": f"acollya/{stage}/openai",
-            "STRIPE_SECRET_ARN": f"acollya/{stage}/stripe",
+            "ANTHROPIC_SECRET_ARN": f"acollya/{stage}/anthropic",
             "LOG_LEVEL": "INFO" if is_prod else "DEBUG",
             "POWERTOOLS_SERVICE_NAME": "acollya-api",
             "POWERTOOLS_METRICS_NAMESPACE": "Acollya",
@@ -153,23 +151,29 @@ class ApiStack(Stack):
             role=lambda_role,
         )
 
-        # Provisioned concurrency on chat Lambda - eliminates cold starts
-        # Only enable in prod (costs ~$0.015/GB-hr)
+        # Provisioned concurrency on chat Lambda - eliminates cold starts.
+        # Only enable in prod (costs ~$0.015/GB-hr). The Function URL must be
+        # attached to the alias (not the function), otherwise traffic hits
+        # $LATEST and the provisioned containers stay idle.
         if is_prod:
             version = self.chat_lambda.current_version
-            _lambda.Alias(
+            alias = _lambda.Alias(
                 self, "ChatProdAlias",
                 alias_name="live",
                 version=version,
                 provisioned_concurrent_executions=2,
             )
+            url_target = alias
+        else:
+            url_target = self.chat_lambda
 
         # ── Lambda Function URL for Chat Streaming ────────────────────────────
         # Direct Function URL bypasses API Gateway 29s timeout for SSE.
         # auth_type=NONE — JWT validation is enforced inside the function.
         # CORS is locked to stage-specific origins for browser-client protection;
-        # native mobile clients don't use CORS so this doesn't affect them.
-        self.chat_url = self.chat_lambda.add_function_url(
+        # native mobile clients don't use CORS so an empty allowed_origins list
+        # simply results in no CORS headers being emitted (correct for mobile).
+        self.chat_url = url_target.add_function_url(
             auth_type=_lambda.FunctionUrlAuthType.NONE,
             cors=_lambda.FunctionUrlCorsOptions(
                 allowed_origins=cors_origins,
@@ -181,11 +185,16 @@ class ApiStack(Stack):
         )
 
         # ── API Gateway HTTP API ──────────────────────────────────────────────
-        http_api = apigwv2.HttpApi(
-            self, "AcollyaHttpApi",
-            api_name=f"acollya-api-{stage}",
-            description=f"Acollya REST API - {stage}",
-            cors_preflight=apigwv2.CorsPreflightOptions(
+        # Only attach CORS preflight when there are origins to allow.
+        # Passing allow_origins=[] would instruct API Gateway to respond to
+        # OPTIONS with no valid origin, breaking browser clients. For mobile-
+        # only stages (prod/staging), simply omit cors_preflight entirely.
+        http_api_kwargs: dict = {
+            "api_name": f"acollya-api-{stage}",
+            "description": f"Acollya REST API - {stage}",
+        }
+        if cors_origins:
+            http_api_kwargs["cors_preflight"] = apigwv2.CorsPreflightOptions(
                 allow_origins=cors_origins,
                 allow_methods=[
                     apigwv2.CorsHttpMethod.GET,
@@ -197,8 +206,8 @@ class ApiStack(Stack):
                 ],
                 allow_headers=["Content-Type", "Authorization", "X-Request-Id"],
                 max_age=Duration.seconds(86400),
-            ),
-        )
+            )
+        http_api = apigwv2.HttpApi(self, "AcollyaHttpApi", **http_api_kwargs)
 
         # Lambda integration (all routes → api_lambda)
         api_integration = integrations.HttpLambdaIntegration(

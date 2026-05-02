@@ -8,9 +8,10 @@ DELETE /users/me   — LGPD right-to-erasure (anonymise account)
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user, get_db
+from app.core.dependencies import get_current_user, get_db, get_redis
 from app.models.user import User
 from app.schemas.auth import MessageResponse
 from app.schemas.user import UserResponse, UserUpdate
@@ -51,6 +52,7 @@ async def update_me(
 async def delete_me(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> Response:
-    await user_service.delete_me(db, current_user)
+    await user_service.delete_me(db, current_user, redis)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

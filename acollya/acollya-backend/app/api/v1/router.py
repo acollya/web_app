@@ -12,7 +12,6 @@ from app.api.v1.endpoints import (
     therapists,
     appointments,
     subscriptions,
-    webhooks,
     analytics,
     chat,
     persona,
@@ -36,9 +35,8 @@ api_router.include_router(programs.router,       prefix="/programs",      tags=[
 api_router.include_router(therapists.router,     prefix="/therapists",    tags=["therapists"])
 api_router.include_router(appointments.router,   prefix="/appointments",  tags=["appointments"])
 
-# ── Phase 1 — Payments & webhooks ─────────────────────────────────────────────
+# ── Phase 1 — Subscriptions ───────────────────────────────────────────────────
 api_router.include_router(subscriptions.router,  prefix="/subscriptions", tags=["subscriptions"])
-api_router.include_router(webhooks.router,       prefix="/webhooks",      tags=["webhooks"])
 
 api_router.include_router(analytics.router,      prefix="/analytics",     tags=["analytics"])
 

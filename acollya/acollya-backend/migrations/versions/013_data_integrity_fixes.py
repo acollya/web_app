@@ -1,7 +1,7 @@
 """Data integrity fixes: constraints, user isolation, seed data corrections.
 
 Changes:
-  1. users.subscription_status — add CHECK constraint for valid Stripe/RevenueCat values
+  1. users.subscription_status — add CHECK constraint for valid subscription status values
   2. appointments.therapist_id — add FK → therapists(id)
   3. ai_response_cache — add user_id column (nullable for backward compat) + index
   4. user_sessions — add partial index on login_at for TTL-based purge queries

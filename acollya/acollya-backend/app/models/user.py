@@ -24,7 +24,6 @@ class User(Base):
     plan_code: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     trial_ends_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     subscription_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default="trialing")
-    stripe_customer_id: Mapped[Optional[str]] = mapped_column(Text, unique=True, nullable=True)
     revenue_cat_id: Mapped[Optional[str]] = mapped_column(Text, unique=True, nullable=True)
     push_token_fcm: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     push_token_apns: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

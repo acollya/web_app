@@ -11,8 +11,6 @@ Usage:
 
   # From environment variables (CI/CD):
   OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... \\
-  STRIPE_SECRET_KEY=sk_test_... STRIPE_WEBHOOK_SECRET=whsec_... \\
-  STRIPE_PRICE_MONTHLY=price_... STRIPE_PRICE_YEARLY=price_... \\
   GOOGLE_CLIENT_ID_IOS=... GOOGLE_CLIENT_ID_ANDROID=... \\
   REVENUE_CAT_API_KEY=... \\
   python scripts/setup_secrets.py --stage dev
@@ -21,7 +19,6 @@ Secrets managed by this script (mirrors SecretsStack):
   acollya/{stage}/jwt          — RS256 key pair + Google OAuth client IDs
   acollya/{stage}/openai       — OpenAI API key + model config
   acollya/{stage}/anthropic    — Anthropic API key + model config
-  acollya/{stage}/stripe       — Stripe keys + price IDs
   acollya/{stage}/app-config   — Application config (trial, limits, RevenueCat)
 """
 import argparse
@@ -75,7 +72,6 @@ def validate_all_populated(client, stage: str) -> list[str]:
         f"acollya/{stage}/jwt",
         f"acollya/{stage}/openai",
         f"acollya/{stage}/anthropic",
-        f"acollya/{stage}/stripe",
         f"acollya/{stage}/app-config",
     ]
     unpopulated = []
@@ -112,23 +108,6 @@ def setup_anthropic(client, stage: str) -> None:
     update_secret(client, f"acollya/{stage}/anthropic", {
         "api_key": api_key,
         "chat_model": model,
-    })
-
-
-def setup_stripe(client, stage: str) -> None:
-    print("\n[ Stripe ]")
-    secret_key = prompt("Secret Key (sk_live_... or sk_test_...)", "STRIPE_SECRET_KEY", secret=True)
-    if not secret_key:
-        print("  — Skipped")
-        return
-    webhook_secret = prompt("Webhook Secret (whsec_...)", "STRIPE_WEBHOOK_SECRET", secret=True)
-    price_monthly  = prompt("Monthly Price ID (price_...)", "STRIPE_PRICE_MONTHLY")
-    price_yearly   = prompt("Yearly Price ID (price_...)", "STRIPE_PRICE_YEARLY")
-    update_secret(client, f"acollya/{stage}/stripe", {
-        "secret_key": secret_key,
-        "webhook_secret": webhook_secret,
-        "monthly_price_id": price_monthly,
-        "annual_price_id": price_yearly,
     })
 
 
@@ -217,7 +196,6 @@ def main():
 
     setup_openai(client, stage)
     setup_anthropic(client, stage)
-    setup_stripe(client, stage)
     setup_app_config(client, stage)
     setup_jwt(client, stage)
 

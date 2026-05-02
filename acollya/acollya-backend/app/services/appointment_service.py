@@ -12,7 +12,7 @@ Business rules:
   - Cancellation allowed only if appointment is ≥2h in the future AND
     status is 'pending' or 'confirmed'
   - Amount is set from therapist.hourly_rate at booking time (snapshot)
-  - payment_status stays 'pending' — Stripe handles it in Etapa 7
+  - payment_status stays 'pending' — payment integration is handled externally
 """
 import logging
 import uuid

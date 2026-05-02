@@ -73,15 +73,6 @@ class SecretsStack(Stack):
             description="Anthropic API credentials — run setup_secrets.py",
         )
 
-        # ── Stripe ────────────────────────────────────────────────────────────
-        # Expected: { "secret_key": "sk_live_...", "webhook_secret": "whsec_...",
-        #             "price_id_monthly": "price_...", "price_id_yearly": "price_..." }
-        self.stripe_secret = _empty_secret(
-            self, "StripeSecret",
-            secret_name=f"acollya/{stage}/stripe",
-            description="Stripe payment credentials — run setup_secrets.py",
-        )
-
         # ── App Config ────────────────────────────────────────────────────────
         # Expected: { "trial_days": "14", "free_chat_messages_per_day": "20",
         #             "premium_chat_messages_per_day": "9999",
@@ -95,5 +86,4 @@ class SecretsStack(Stack):
         # ── Expose ARNs ───────────────────────────────────────────────────────
         CfnOutput(self, "JwtSecretArn", value=self.jwt_secret.secret_arn, export_name=f"AcollyaJwtSecretArn-{stage}")
         CfnOutput(self, "OpenAiSecretArn", value=self.openai_secret.secret_arn, export_name=f"AcollyaOpenAiSecretArn-{stage}")
-        CfnOutput(self, "StripeSecretArn", value=self.stripe_secret.secret_arn, export_name=f"AcollyaStripeSecretArn-{stage}")
         CfnOutput(self, "AnthropicSecretArn", value=self.anthropic_secret.secret_arn, export_name=f"AcollyaAnthropicSecretArn-{stage}")

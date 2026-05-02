@@ -26,9 +26,7 @@ class Subscription(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), ForeignKey("users.id"))
-    provider: Mapped[str] = mapped_column(Text, nullable=False, default="stripe")
-    stripe_subscription_id: Mapped[Optional[str]] = mapped_column(Text, unique=True, nullable=True)
-    stripe_price_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    provider: Mapped[str] = mapped_column(Text, nullable=False, default="revenue_cat")
     revenue_cat_entitlement: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False)
     current_period_start: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
