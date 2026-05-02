@@ -66,14 +66,19 @@ async def get_overview(db: AsyncSession, user: User) -> OverviewResponse:
     cutoff_7d = now - timedelta(days=7)
     cutoff_30d = now - timedelta(days=30)
 
-    # 1. Mood totals + streak
+    cutoff_365d = now - timedelta(days=365)
+
+    # 1. Mood totals + streak — bounded to 365 days to cap query cost
     mood_result = await db.execute(
         select(
             type_coerce(func.date(MoodCheckin.created_at), Date).label("day"),
             func.avg(MoodCheckin.intensity).label("avg_int"),
             func.count().label("cnt"),
         )
-        .where(MoodCheckin.user_id == user.id)
+        .where(
+            MoodCheckin.user_id == user.id,
+            MoodCheckin.created_at >= cutoff_365d,
+        )
         .group_by(type_coerce(func.date(MoodCheckin.created_at), Date))
     )
     mood_rows = mood_result.all()
@@ -89,13 +94,16 @@ async def get_overview(db: AsyncSession, user: User) -> OverviewResponse:
         total_c = sum(r.cnt for r in recent_rows)
         avg_intensity_last_7d = round(total_w / total_c, 2) if total_c else None
 
-    # 2. Journal totals
+    # 2. Journal totals — bounded to 365 days
     journal_result = await db.execute(
         select(
             type_coerce(func.date(JournalEntry.created_at), Date).label("day"),
             func.count().label("cnt"),
         )
-        .where(JournalEntry.user_id == user.id)
+        .where(
+            JournalEntry.user_id == user.id,
+            JournalEntry.created_at >= cutoff_365d,
+        )
         .group_by(type_coerce(func.date(JournalEntry.created_at), Date))
     )
     journal_rows = journal_result.all()
@@ -170,7 +178,7 @@ async def get_overview(db: AsyncSession, user: User) -> OverviewResponse:
 async def get_mood_trend(
     db: AsyncSession, user: User, days: int
 ) -> MoodTrendResponse:
-    cutoff = datetime.now(UTC) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=min(days, 365))
 
     # Fetch all rows in range — aggregate in Python to compute dominant mood
     result = await db.execute(
@@ -214,7 +222,7 @@ async def get_mood_trend(
 async def get_activity(
     db: AsyncSession, user: User, days: int
 ) -> ActivityResponse:
-    cutoff = datetime.now(UTC) - timedelta(days=days)
+    cutoff = datetime.now(UTC) - timedelta(days=min(days, 365))
 
     # Mood checkins per day
     mood_result = await db.execute(

@@ -17,6 +17,7 @@ from redis.asyncio import Redis
 from app.config import settings
 from app.database import init_db
 from app.core.exceptions import AcollyaException, RateLimitError
+from app.services import chat_service, persona_service
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,10 @@ async def lifespan(app: FastAPI):
         socket_timeout=3,
     )
     logger.info("Redis client initialised: %s", settings.redis_host)
+
+    # Wire shared Redis into services that need it (avoids per-call connections)
+    persona_service.configure_redis(app.state.redis)
+    chat_service.configure_redis(app.state.redis)
 
     yield
 

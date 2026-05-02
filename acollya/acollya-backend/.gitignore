@@ -1,0 +1,50 @@
+# Segredos — nunca commitar
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*_private*
+*_secret*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testes
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Alembic (não commitar o banco SQLite de dev)
+*.db
+*.sqlite
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Docker
+.docker/

@@ -21,7 +21,7 @@ from app.schemas.mood import (
     MoodInsightsResponse,
 )
 from app.services import mood_service
-from app.services.persona_service import extract_and_upsert_facts
+from app.services.persona_service import bg_extract_and_upsert_facts
 
 router = APIRouter()
 
@@ -38,14 +38,12 @@ async def create_checkin(
     current_user: Annotated[User, Depends(require_premium)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MoodCheckinResponse:
-    checkin = await mood_service.create_checkin(db, current_user, body)
-    # Extrai fatos do check-in em background (nota + humor como contexto)
+    checkin = await mood_service.create_checkin(db, current_user, body, background_tasks)
     if body.note:
         mood_text = f"Humor: {body.mood}, intensidade {body.intensity}/5. Nota: {body.note}"
         background_tasks.add_task(
-            extract_and_upsert_facts,
-            db=db,
-            user=current_user,
+            bg_extract_and_upsert_facts,
+            user_id=current_user.id,
             text_input=mood_text,
             source="mood_checkin",
             source_id=uuid.UUID(checkin.id) if isinstance(checkin.id, str) else checkin.id,

@@ -52,6 +52,7 @@ async def delete_me(db: AsyncSession, user: User) -> None:
     user.birth_date = None
     user.gender = None
     user.google_id = None
+    user.apple_id = None
     user.password_hash = None
     user.push_token_fcm = None
     user.push_token_apns = None

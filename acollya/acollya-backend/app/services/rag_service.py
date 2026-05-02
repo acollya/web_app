@@ -16,6 +16,18 @@ Fluxo típico
        context = await retrieve_context(db, user, query_text)
    e injeta `context` no system prompt.
 
+Hybrid Search (BM25 + vetorial com RRF)
+----------------------------------------
+Para tabelas com tsvector (chat_messages, journal_entries), combina dois rankings:
+  - Vetorial: distância cosseno do embedding (semântica)
+  - BM25: ts_rank_cd com plainto_to_tsquery (lexical, keywords exatas)
+O Reciprocal Rank Fusion (RRF, k=60) normaliza os dois rankings em um score único.
+
+Time Decay
+----------
+O score final é multiplicado por exp(-days_old / 60) para priorizar conteúdo
+recente. Dados com 60 dias têm peso 0.37×, dados com 180 dias têm peso 0.05×.
+
 Embedding
 ---------
 Usa OpenAI text-embedding-3-small (1536 dims) — mesmo modelo do persona_service,
@@ -27,6 +39,7 @@ Ambas as funções silenciam exceções internamente. Um erro de RAG nunca deve
 bloquear a resposta principal ao usuário.
 """
 import logging
+import math
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
@@ -48,11 +61,22 @@ _TOP_K_PER_TABLE = 2
 # Máximo de fragmentos de contexto injetados no prompt
 _TOP_K_FINAL = 5
 
-# Limite de distância cosseno (0 = idêntico, 2 = oposto).
-# distance < 0.45  →  similarity > 0.55  →  relevância razoável.
-_MAX_DISTANCE = 0.45
+# Limites de distância cosseno por tabela (0 = idêntico, 2 = oposto).
+# Mood check-ins são curtos e muito específicos → threshold mais restrito.
+# Diários são longos e ricos → threshold mais permissivo.
+# Chat está no meio-termo.
+_MAX_DISTANCE_CHAT    = 0.32   # similarity > 0.68 — mensagens de chat
+_MAX_DISTANCE_JOURNAL = 0.36   # similarity > 0.64 — entradas de diário
+_MAX_DISTANCE_MOOD    = 0.28   # similarity > 0.72 — check-ins de humor
 
 _EMBEDDING_DIM = 1536
+
+# RRF constant — k=60 é o valor padrão da literatura; reduz o impacto de outliers
+_RRF_K = 60
+
+# Meia-vida do time decay em dias. score *= exp(-days_old / _DECAY_HALFLIFE)
+# Com 60 dias → peso 0.37×; com 180 dias → peso 0.05×
+_DECAY_HALFLIFE = 60
 
 TableName = Literal["chat_messages", "journal_entries", "mood_checkins"]
 
@@ -88,6 +112,16 @@ async def _generate_embedding(text_input: str) -> list[float] | None:
 def _vec_literal(embedding: list[float]) -> str:
     """Serializa embedding para o formato literal aceito pelo pgvector."""
     return f"[{','.join(str(x) for x in embedding)}]"
+
+
+# ── Time decay ─────────────────────────────────────────────────────────────────
+
+def _time_decay_factor(dt: datetime) -> float:
+    """Retorna fator de decaimento exponencial baseado na idade do registro."""
+    now = datetime.now(timezone.utc)
+    aware = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    days_old = max(0, (now - aware).days)
+    return math.exp(-days_old / _DECAY_HALFLIFE)
 
 
 # ── Tempo relativo ──────────────────────────────────────────────────────────────
@@ -180,53 +214,115 @@ async def retrieve_context(
 
         vec = _vec_literal(query_embedding)
         user_id = str(user.id)
-        fragments: list[tuple[float, str]] = []   # (distance, formatted_line)
 
-        # ── chat_messages: apenas mensagens do usuário ─────────────────────────
+        # fragments: (rrf_score, formatted_line) — score MAIOR = mais relevante
+        fragments: list[tuple[float, str]] = []
+
+        # ── chat_messages: usuário + assistente com RRF + time decay ─────────────
+        # Mensagens do assistente são incluídas com threshold mais restrito
+        # (-0.05) e penalidade de 0.05 no ranking vetorial — fornece contexto
+        # bidirecional mas sem competir em igualdade com mensagens do usuário.
         rows = await db.execute(
             text(
                 """
-                SELECT content, created_at,
-                       embedding <=> CAST(:vec AS vector) AS distance
-                FROM chat_messages
-                WHERE user_id = :uid
-                  AND role = 'user'
-                  AND embedding IS NOT NULL
-                  AND embedding <=> CAST(:vec AS vector) < :max_dist
-                ORDER BY distance
+                WITH vec_ranked AS (
+                    SELECT id, role, content, created_at,
+                           row_number() OVER (
+                               ORDER BY (embedding <=> CAST(:vec AS vector))
+                                        + CASE WHEN role = 'assistant' THEN 0.05 ELSE 0 END
+                           ) AS vec_rank
+                    FROM chat_messages
+                    WHERE user_id = :uid
+                      AND embedding IS NOT NULL
+                      AND (
+                          (role = 'user'      AND embedding <=> CAST(:vec AS vector) < :max_dist)
+                          OR
+                          (role = 'assistant' AND embedding <=> CAST(:vec AS vector) < :max_dist_asst)
+                      )
+                    LIMIT :k_inner
+                ),
+                bm25_ranked AS (
+                    SELECT id, role, content, created_at,
+                           row_number() OVER (ORDER BY ts_rank_cd(ts_content, plainto_tsquery('portuguese', :query)) DESC) AS bm25_rank
+                    FROM chat_messages
+                    WHERE user_id = :uid
+                      AND ts_content @@ plainto_tsquery('portuguese', :query)
+                    LIMIT :k_inner
+                )
+                SELECT COALESCE(v.id, b.id) AS id,
+                       COALESCE(v.role, b.role) AS role,
+                       COALESCE(v.content, b.content) AS content,
+                       COALESCE(v.created_at, b.created_at) AS created_at,
+                       COALESCE(1.0 / (:rrf_k + v.vec_rank), 0) +
+                       COALESCE(1.0 / (:rrf_k + b.bm25_rank), 0) AS rrf_score
+                FROM vec_ranked v
+                FULL OUTER JOIN bm25_ranked b ON v.id = b.id
+                ORDER BY rrf_score DESC
                 LIMIT :k
                 """
             ),
-            {"vec": vec, "uid": user_id, "max_dist": _MAX_DISTANCE, "k": _TOP_K_PER_TABLE},
+            {
+                "vec": vec, "uid": user_id, "query": query_text[:500],
+                "max_dist": _MAX_DISTANCE_CHAT,
+                "max_dist_asst": _MAX_DISTANCE_CHAT - 0.05,
+                "rrf_k": _RRF_K,
+                "k_inner": _TOP_K_PER_TABLE * 3, "k": _TOP_K_PER_TABLE,
+            },
         )
         for row in rows.fetchall():
             snippet = row.content[:200].replace("\n", " ")
-            line = f'[Chat - {_relative_time(row.created_at)}] "{snippet}"'
-            fragments.append((row.distance, line))
+            role_label = "Acollya" if row.role == "assistant" else "Chat"
+            line = f'[{role_label} - {_relative_time(row.created_at)}] "{snippet}"'
+            score = row.rrf_score * _time_decay_factor(row.created_at)
+            fragments.append((score, line))
 
-        # ── journal_entries ────────────────────────────────────────────────────
+        # ── journal_entries: hybrid BM25 + vetorial com RRF + time decay ───────
         rows = await db.execute(
             text(
                 """
-                SELECT title, content, created_at,
-                       embedding <=> CAST(:vec AS vector) AS distance
-                FROM journal_entries
-                WHERE user_id = :uid
-                  AND embedding IS NOT NULL
-                  AND embedding <=> CAST(:vec AS vector) < :max_dist
-                ORDER BY distance
+                WITH vec_ranked AS (
+                    SELECT id, title, content, created_at,
+                           row_number() OVER (ORDER BY embedding <=> CAST(:vec AS vector)) AS vec_rank
+                    FROM journal_entries
+                    WHERE user_id = :uid
+                      AND embedding IS NOT NULL
+                      AND embedding <=> CAST(:vec AS vector) < :max_dist
+                    LIMIT :k_inner
+                ),
+                bm25_ranked AS (
+                    SELECT id, title, content, created_at,
+                           row_number() OVER (ORDER BY ts_rank_cd(ts_content, plainto_tsquery('portuguese', :query)) DESC) AS bm25_rank
+                    FROM journal_entries
+                    WHERE user_id = :uid
+                      AND ts_content @@ plainto_tsquery('portuguese', :query)
+                    LIMIT :k_inner
+                )
+                SELECT COALESCE(v.id, b.id) AS id,
+                       COALESCE(v.title, b.title) AS title,
+                       COALESCE(v.content, b.content) AS content,
+                       COALESCE(v.created_at, b.created_at) AS created_at,
+                       COALESCE(1.0 / (:rrf_k + v.vec_rank), 0) +
+                       COALESCE(1.0 / (:rrf_k + b.bm25_rank), 0) AS rrf_score
+                FROM vec_ranked v
+                FULL OUTER JOIN bm25_ranked b ON v.id = b.id
+                ORDER BY rrf_score DESC
                 LIMIT :k
                 """
             ),
-            {"vec": vec, "uid": user_id, "max_dist": _MAX_DISTANCE, "k": _TOP_K_PER_TABLE},
+            {
+                "vec": vec, "uid": user_id, "query": query_text[:500],
+                "max_dist": _MAX_DISTANCE_JOURNAL, "rrf_k": _RRF_K,
+                "k_inner": _TOP_K_PER_TABLE * 3, "k": _TOP_K_PER_TABLE,
+            },
         )
         for row in rows.fetchall():
             snippet = row.content[:200].replace("\n", " ")
             label = row.title or "Diário"
             line = f'[{label} - {_relative_time(row.created_at)}] "{snippet}"'
-            fragments.append((row.distance, line))
+            score = row.rrf_score * _time_decay_factor(row.created_at)
+            fragments.append((score, line))
 
-        # ── mood_checkins ──────────────────────────────────────────────────────
+        # ── mood_checkins: apenas vetorial + time decay (sem texto rico) ────────
         rows = await db.execute(
             text(
                 """
@@ -240,20 +336,23 @@ async def retrieve_context(
                 LIMIT :k
                 """
             ),
-            {"vec": vec, "uid": user_id, "max_dist": _MAX_DISTANCE, "k": _TOP_K_PER_TABLE},
+            {"vec": vec, "uid": user_id, "max_dist": _MAX_DISTANCE_MOOD, "k": _TOP_K_PER_TABLE},
         )
         for row in rows.fetchall():
             mood_str = f"{row.mood} (intensidade {row.intensity})"
             if row.note:
                 mood_str += f' — "{row.note[:120]}"'
             line = f"[Humor - {_relative_time(row.created_at)}] {mood_str}"
-            fragments.append((row.distance, line))
+            # mood usa score vetorial invertido (distância → similaridade) com decay
+            vec_score = (1.0 / (_RRF_K + 1)) * (1 - row.distance)
+            score = vec_score * _time_decay_factor(row.created_at)
+            fragments.append((score, line))
 
         if not fragments:
             return ""
 
-        # Ordena por distância (mais similar primeiro) e limita ao top_k global
-        fragments.sort(key=lambda t: t[0])
+        # Ordena por score RRF + decay (maior primeiro) e limita ao top_k global
+        fragments.sort(key=lambda t: t[0], reverse=True)
         top_lines = [line for _, line in fragments[:top_k]]
 
         return "Histórico relevante do usuário (use como contexto adicional):\n" + "\n".join(top_lines)

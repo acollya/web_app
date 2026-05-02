@@ -36,12 +36,19 @@ class MonitoringStack(Stack):
         db_instance: rds.DatabaseInstance,
         api_gateway_id: str,
         stage: str,
+        ops_email: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, id, **kwargs)
 
         self.stage = stage
         is_prod = stage == "prod"
+
+        if is_prod and not ops_email:
+            cdk.Annotations.of(self).add_warning(
+                "ops_email not set — CloudWatch alarms will NOT send email notifications in prod. "
+                "Pass --context ops_email=ops@acollya.com.br when deploying."
+            )
 
         # ── SNS Alert Topic ───────────────────────────────────────────────────
         alert_topic = sns.Topic(
@@ -50,11 +57,13 @@ class MonitoringStack(Stack):
             display_name=f"Acollya {stage.upper()} Alerts",
         )
 
-        # Add email subscription — replace with your ops email
-        # Uncomment after deploy and confirm subscription in email:
-        # alert_topic.add_subscription(
-        #     subscriptions.EmailSubscription("ops@acollya.com.br")
-        # )
+        # Email subscription — set ops_email in app.py or via CDK context:
+        #   cdk deploy --context ops_email=ops@acollya.com.br
+        # After first deploy, confirm the subscription in the email inbox.
+        if ops_email:
+            alert_topic.add_subscription(
+                subscriptions.EmailSubscription(ops_email)
+            )
 
         alarm_action = cw_actions.SnsAction(alert_topic)
 

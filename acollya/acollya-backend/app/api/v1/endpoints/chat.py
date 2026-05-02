@@ -32,8 +32,9 @@ with a Retry-After header when available.
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response, status
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response, status
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +51,10 @@ from app.schemas.chat import (
     ChatSessionResponse,
 )
 from app.services import chat_service
+
+
+class SendMessageRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000, description="Message text")
 
 router = APIRouter()
 
@@ -153,24 +158,21 @@ async def list_messages(
 )
 async def send_message(
     session_id: uuid.UUID,
-    request: Request,
+    body: SendMessageRequest,
+    background_tasks: BackgroundTasks,
     current_user: Annotated[User, Depends(require_premium)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
-    content: str = Query(..., min_length=1, max_length=4000, description="Message text"),
 ) -> StreamingResponse:
     """
     Send a user message and stream the assistant reply as SSE.
 
-    Query param `content` carries the message text so the endpoint is
-    compatible with EventSource (browser SSE API which only supports GET),
-    but here it is POST to allow long messages and rate-limit enforcement.
+    Message text is sent in the JSON body (not query string) to prevent
+    sensitive clinical content from appearing in server access logs.
 
     Rate limit: enforced per user per day via Redis sorted set.
-    Crisis detection: runs synchronously before the OpenAI call inside
-    chat_service.stream_message; CVV block is appended for HIGH/CRITICAL.
+    Crisis detection: runs before the LLM call; CVV block appended for HIGH/CRITICAL.
     """
-    # Rate limiting
     limiter = RateLimiter(redis)
     limit = _message_limit(current_user)
     try:
@@ -184,17 +186,17 @@ async def send_message(
         headers = {}
         if exc.retry_after is not None:
             headers["Retry-After"] = str(exc.retry_after)
-        return StreamingResponse(
-            content=iter([]),
+        return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Rate limit exceeded. Try again later."},
             headers=headers,
         )
 
     return StreamingResponse(
-        chat_service.stream_message(db, current_user, session_id, content),
+        chat_service.stream_message(db, current_user, session_id, body.content, background_tasks),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",   # disable Nginx buffering for SSE
+            "X-Accel-Buffering": "no",
         },
     )

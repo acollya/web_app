@@ -14,10 +14,14 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
+from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user, get_db
+from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.exceptions import RateLimitError
+from app.core.rate_limiter import RateLimiter
 from app.models.user import User
 from app.models.user_persona_fact import PersonaCategory, UserPersonaFact
 from app.schemas.persona import (
@@ -98,7 +102,24 @@ async def extract_facts(
     body: PersonaExtractRequest,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
 ) -> dict:
+    # 10 manual extractions per hour — this endpoint calls OpenAI GPT-4 per request
+    try:
+        await RateLimiter(redis).check_and_increment(
+            user_id=str(current_user.id),
+            action="persona_extract",
+            limit=10,
+            window_seconds=3600,
+        )
+    except RateLimitError as exc:
+        headers = {"Retry-After": str(exc.retry_after)} if exc.retry_after else {}
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Limite de extrações atingido. Tente novamente mais tarde."},
+            headers=headers,
+        )
+
     await extract_and_upsert_facts(
         db=db,
         user=current_user,

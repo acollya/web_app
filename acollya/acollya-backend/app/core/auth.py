@@ -161,11 +161,18 @@ async def verify_google_id_token(id_token: str) -> dict[str, Any]:
             logger.error("Google tokeninfo request failed: %s", exc)
             raise AuthenticationError("Could not verify Google token") from exc
 
-    # Validate audience — must match our app's client ID(s)
-    # Google OAuth client IDs are stored in the app config secret
-    cfg = settings.jwt_config  # reuse the same secret or add dedicated google secret
-    google_client_ids = cfg.get("google_client_ids", [])
-    if google_client_ids and data.get("aud") not in google_client_ids:
+    # Validate audience — must match our app's client ID(s).
+    # Fails closed: if no client IDs are configured, the token is rejected.
+    # This prevents accepting tokens from other Google-integrated apps.
+    cfg = settings.jwt_config
+    google_client_ids: list[str] = cfg.get("google_client_ids", [])
+    if not google_client_ids:
+        logger.error(
+            "google_client_ids not configured — rejecting Google token to fail closed. "
+            "Add client ID(s) to the JWT secret under the 'google_client_ids' key."
+        )
+        raise AuthenticationError("Google OAuth not configured on this server")
+    if data.get("aud") not in google_client_ids:
         raise AuthenticationError("Google token audience mismatch")
 
     if "sub" not in data or "email" not in data:

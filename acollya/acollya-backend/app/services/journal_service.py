@@ -37,11 +37,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Optional
 
+from fastapi import BackgroundTasks
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AuthorizationError, NotFoundError
 from app.core.llm_provider import get_insight_provider, _INSIGHT_MAX_TOKENS
+from app.database import AsyncSessionLocal
 from app.models.journal_entry import JournalEntry
 from app.models.mood_checkin import MoodCheckin
 from app.models.user import User
@@ -143,7 +145,7 @@ async def _run_reflection(db: AsyncSession, user: User, entry: JournalEntry) -> 
             user_message = entry.content
 
         # ── Contexto: persona + RAG (query = conteúdo da entrada) ────────────
-        persona_context = await get_persona_context(db, user)
+        persona_context = await get_persona_context(db, user, query_text=entry.content[:500])
         rag_context = await retrieve_context(db, user, entry.content)
 
         sections: list[str] = []
@@ -182,10 +184,28 @@ async def _run_reflection(db: AsyncSession, user: User, entry: JournalEntry) -> 
         )
 
 
+# ── Background task wrappers ───────────────────────────────────────────────────
+
+async def _bg_embed_entry(entry_id: uuid.UUID, embed_text: str) -> None:
+    async with AsyncSessionLocal() as db:
+        await embed_and_store(db, entry_id, "journal_entries", embed_text)
+
+
+async def _bg_run_reflection(entry_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    async with AsyncSessionLocal() as db:
+        try:
+            entry = await db.get(JournalEntry, entry_id)
+            user = await db.get(User, user_id)
+            if entry and user:
+                await _run_reflection(db, user, entry)
+        except Exception as exc:
+            logger.warning("_bg_run_reflection failed: entry=%s %s", entry_id, exc)
+
+
 # ── Create ─────────────────────────────────────────────────────────────────────
 
 async def create_entry(
-    db: AsyncSession, user: User, data: JournalEntryCreate
+    db: AsyncSession, user: User, data: JournalEntryCreate, background_tasks: BackgroundTasks
 ) -> JournalEntryResponse:
     """
     Persist a new journal entry and generate an AI reflection inline.
@@ -205,11 +225,9 @@ async def create_entry(
 
     logger.info("Journal entry created: user=%s entry=%s", user.id, entry.id)
 
-    # Embedding para RAG — título + conteúdo
     embed_text = f"{entry.title}\n{entry.content}" if entry.title else entry.content
-    await embed_and_store(db, entry.id, "journal_entries", embed_text)
-
-    await _run_reflection(db, user, entry)
+    background_tasks.add_task(_bg_embed_entry, entry.id, embed_text)
+    background_tasks.add_task(_bg_run_reflection, entry.id, user.id)
 
     return JournalEntryResponse.model_validate(entry)
 
@@ -268,7 +286,11 @@ async def get_entry(
 # ── Update ─────────────────────────────────────────────────────────────────────
 
 async def update_entry(
-    db: AsyncSession, user: User, entry_id: str, data: JournalEntryUpdate
+    db: AsyncSession,
+    user: User,
+    entry_id: str,
+    data: JournalEntryUpdate,
+    background_tasks: Optional[BackgroundTasks] = None,
 ) -> JournalEntryResponse:
     """
     Edit content and/or title of a journal entry.
@@ -304,11 +326,13 @@ async def update_entry(
     await db.refresh(entry)
 
     if content_changed:
-        # Regenera embedding com o novo conteúdo
         embed_text = f"{entry.title}\n{entry.content}" if entry.title else entry.content
-        await embed_and_store(db, entry.id, "journal_entries", embed_text)
-
-        await _run_reflection(db, user, entry)
+        if background_tasks is not None:
+            background_tasks.add_task(_bg_embed_entry, entry.id, embed_text)
+            background_tasks.add_task(_bg_run_reflection, entry.id, user.id)
+        else:
+            await embed_and_store(db, entry.id, "journal_entries", embed_text)
+            await _run_reflection(db, user, entry)
 
     return JournalEntryResponse.model_validate(entry)
 

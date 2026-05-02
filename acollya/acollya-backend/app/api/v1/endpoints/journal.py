@@ -23,7 +23,7 @@ from app.schemas.journal import (
     JournalListResponse,
 )
 from app.services import journal_service
-from app.services.persona_service import extract_and_upsert_facts
+from app.services.persona_service import bg_extract_and_upsert_facts
 
 router = APIRouter()
 
@@ -40,12 +40,10 @@ async def create_entry(
     current_user: Annotated[User, Depends(require_premium)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JournalEntryResponse:
-    entry = await journal_service.create_entry(db, current_user, body)
-    # Extrai fatos da entrada do diário em background
+    entry = await journal_service.create_entry(db, current_user, body, background_tasks)
     background_tasks.add_task(
-        extract_and_upsert_facts,
-        db=db,
-        user=current_user,
+        bg_extract_and_upsert_facts,
+        user_id=current_user.id,
         text_input=body.content,
         source="journal",
         source_id=uuid.UUID(entry.id) if isinstance(entry.id, str) else entry.id,
@@ -88,10 +86,11 @@ async def get_entry(
 async def update_entry(
     entry_id: uuid.UUID,
     body: JournalEntryUpdate,
+    background_tasks: BackgroundTasks,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JournalEntryResponse:
-    return await journal_service.update_entry(db, current_user, str(entry_id), body)
+    return await journal_service.update_entry(db, current_user, str(entry_id), body, background_tasks)
 
 
 @router.delete(

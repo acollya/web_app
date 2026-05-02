@@ -11,8 +11,10 @@ Instance sizing:
   Phase 3 (10k users):  cache.t3.small — $26/month
   Phase 6 (100k users): cache.r6g.large with cluster mode
 
-Note: ElastiCache Serverless (~$90/month minimum) is cheaper only at >100k users.
-For Phase 0-2, standalone t3.micro is optimal.
+TLS:
+  CfnCacheCluster does NOT support transit_encryption_enabled.
+  We use CfnReplicationGroup (single-node, no failover) which supports TLS.
+  Lambda connects via rediss:// when REDIS_TLS=true (set by ApiStack for prod).
 """
 import aws_cdk as cdk
 from aws_cdk import (
@@ -41,7 +43,6 @@ class CacheStack(Stack):
         is_prod = stage == "prod"
 
         # ── Security Group ────────────────────────────────────────────────────
-        # No fixed name — let CDK generate it to avoid conflicts on re-deploy
         redis_sg = ec2.SecurityGroup(
             self, "RedisSg",
             vpc=vpc,
@@ -69,30 +70,37 @@ class CacheStack(Stack):
             subnet_ids=private_subnet_ids,
         )
 
-        # ── Redis Cluster ─────────────────────────────────────────────────────
-        redis_cluster = elasticache.CfnCacheCluster(
+        # ── Redis Replication Group (single-node, TLS enabled) ────────────────
+        # CfnReplicationGroup is required for transit_encryption_enabled.
+        # num_cache_clusters=1 + automatic_failover_enabled=False = single node.
+        redis = elasticache.CfnReplicationGroup(
             self, "AcollyaRedis",
-            cluster_name=f"acollya-redis-{stage}",
+            replication_group_description=f"Acollya Redis - {stage}",
+            replication_group_id=f"acollya-redis-{stage}",
             cache_node_type="cache.t3.micro" if not is_prod else "cache.t3.small",
             engine="redis",
             engine_version="7.1",
-            num_cache_nodes=1,
+            num_cache_clusters=1,
+            automatic_failover_enabled=False,  # required when num_cache_clusters=1
+            multi_az_enabled=False,
             cache_subnet_group_name=subnet_group.cache_subnet_group_name,
-            vpc_security_group_ids=[redis_sg.security_group_id],
-            # Persistence — RDB snapshot every 12h for durability
+            security_group_ids=[redis_sg.security_group_id],
+            # Encryption
+            at_rest_encryption_enabled=True,
+            transit_encryption_enabled=True,
+            # Persistence — RDB snapshot every 12h
             snapshot_retention_limit=1 if not is_prod else 3,
-            snapshot_window="02:00-03:00",  # UTC = 23:00-00:00 BRT
+            snapshot_window="02:00-03:00",
             preferred_maintenance_window="mon:05:00-mon:06:00",
-            # Note: transit_encryption_enabled is only supported on ReplicationGroup,
-            # not CfnCacheCluster. Security is enforced via private subnet + SG.
-            # Auto minor version upgrade
             auto_minor_version_upgrade=True,
         )
-        redis_cluster.add_dependency(subnet_group)
+        redis.add_dependency(subnet_group)
 
         # ── Expose outputs ────────────────────────────────────────────────────
-        self.redis_host = redis_cluster.attr_redis_endpoint_address
-        self.redis_port = redis_cluster.attr_redis_endpoint_port
+        # ReplicationGroup primary endpoint (not attr_redis_endpoint_address)
+        self.redis_host = redis.attr_primary_end_point_address
+        self.redis_port = redis.attr_primary_end_point_port
+        self.redis_tls = True  # Always TLS — Lambda reads this to use rediss://
 
         # ── Outputs ───────────────────────────────────────────────────────────
         CfnOutput(

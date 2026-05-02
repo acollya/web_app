@@ -95,7 +95,20 @@ class Settings(BaseSettings):
                 "https://www.acollya.com.br",
                 "https://app.acollya.com.br",
             ]
-        return ["*"]
+        if self.stage == "staging":
+            return [
+                "https://staging.acollya.com.br",
+                "https://app-staging.acollya.com.br",
+            ]
+        # dev: allow localhost origins for web admin/dashboard tooling.
+        # Native mobile clients do not use CORS — only browser-based tools need this.
+        return [
+            "http://localhost:3000",
+            "http://localhost:8000",
+            "http://localhost:19006",  # Expo web
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:8000",
+        ]
 
     # ── Database URL ──────────────────────────────────────────────────────────
     @cached_property

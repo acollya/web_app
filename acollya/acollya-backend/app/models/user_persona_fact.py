@@ -1,7 +1,7 @@
 """ORM model for user_persona_facts — fatos extraídos para hiperpersonalização."""
 import uuid
 import enum
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import Column, String, Text, Float, DateTime, ForeignKey, Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID
@@ -34,9 +34,9 @@ class UserPersonaFact(Base):
     source     = Column(String(50), nullable=False)   # "chat" | "journal" | "mood_checkin" | "manual"
     source_id  = Column(UUID(as_uuid=True), nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow,
-                        onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc), nullable=False)
 
     # Relacionamento reverso (opcional, para queries ORM)
     user = relationship("User", back_populates="persona_facts", lazy="noload")

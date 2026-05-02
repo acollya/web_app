@@ -53,6 +53,7 @@ class ApiStack(Stack):
         db_host: str,
         redis_host: str,
         redis_port: str,
+        redis_tls: bool,
         media_bucket: s3.Bucket,
         stage: str,
         **kwargs,
@@ -61,6 +62,14 @@ class ApiStack(Stack):
 
         self.stage = stage
         is_prod = stage == "prod"
+
+        # Per-stage CORS origins — mobile apps skip CORS; this protects browser clients
+        if stage == "prod":
+            cors_origins = ["https://acollya.com.br", "https://www.acollya.com.br", "https://app.acollya.com.br"]
+        elif stage == "staging":
+            cors_origins = ["https://staging.acollya.com.br", "https://app-staging.acollya.com.br"]
+        else:
+            cors_origins = ["http://localhost:3000", "http://localhost:19006", "http://127.0.0.1:3000", "http://localhost:8000"]
 
         # ── Shared environment variables ──────────────────────────────────────
         shared_env = {
@@ -72,7 +81,7 @@ class ApiStack(Stack):
             "DB_SECRET_ARN": db_secret.secret_arn,
             "REDIS_HOST": redis_host,
             "REDIS_PORT": redis_port,
-            "REDIS_TLS": "false",
+            "REDIS_TLS": "true" if redis_tls else "false",
             "MEDIA_BUCKET": media_bucket.bucket_name,
             "JWT_SECRET_ARN": f"acollya/{stage}/jwt",
             "OPENAI_SECRET_ARN": f"acollya/{stage}/openai",
@@ -156,11 +165,14 @@ class ApiStack(Stack):
             )
 
         # ── Lambda Function URL for Chat Streaming ────────────────────────────
-        # Direct Function URL bypasses API Gateway 29s timeout for SSE
+        # Direct Function URL bypasses API Gateway 29s timeout for SSE.
+        # auth_type=NONE — JWT validation is enforced inside the function.
+        # CORS is locked to stage-specific origins for browser-client protection;
+        # native mobile clients don't use CORS so this doesn't affect them.
         self.chat_url = self.chat_lambda.add_function_url(
-            auth_type=_lambda.FunctionUrlAuthType.NONE,  # JWT auth handled in app
+            auth_type=_lambda.FunctionUrlAuthType.NONE,
             cors=_lambda.FunctionUrlCorsOptions(
-                allowed_origins=["*"],
+                allowed_origins=cors_origins,
                 allowed_methods=[_lambda.HttpMethod.POST],
                 allowed_headers=["Content-Type", "Authorization"],
                 max_age=Duration.seconds(86400),
@@ -174,7 +186,7 @@ class ApiStack(Stack):
             api_name=f"acollya-api-{stage}",
             description=f"Acollya REST API - {stage}",
             cors_preflight=apigwv2.CorsPreflightOptions(
-                allow_origins=["*"],
+                allow_origins=cors_origins,
                 allow_methods=[
                     apigwv2.CorsHttpMethod.GET,
                     apigwv2.CorsHttpMethod.POST,
@@ -212,7 +224,8 @@ class ApiStack(Stack):
         apigw_log_group = logs.LogGroup(
             self, "ApiGwLogGroup",
             log_group_name=f"/aws/apigateway/acollya-{stage}",
-            retention=logs.RetentionDays.ONE_MONTH,
+            # 1 year for prod (audit trail), 1 month for dev (cost)
+            retention=logs.RetentionDays.ONE_YEAR if is_prod else logs.RetentionDays.ONE_MONTH,
         )
 
         # Enable access logging + throttling on default stage via CfnStage

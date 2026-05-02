@@ -38,7 +38,7 @@ Token budgets
 
 Temperature
 -----------
-  _INSIGHT_TEMPERATURE = 0.7  — aplicado em complete() quando thinking=False.
+  _INSIGHT_TEMPERATURE = 0.4  — aplicado em complete() quando thinking=False.
   Reduz variância nas respostas clínicas mantendo naturalidade.
   Não afeta chamadas com thinking ativo (ignorado pela API Anthropic).
 
@@ -80,7 +80,7 @@ _INSIGHT_MAX_TOKENS = 800
 _DEFAULT_MAX_TOKENS = 1024
 
 # Temperature para complete() sem thinking — reduz variância em contexto clínico.
-_INSIGHT_TEMPERATURE = 0.7
+_INSIGHT_TEMPERATURE = 0.4
 
 # Anthropic prompt-caching beta header.
 # Caches system prompt across turns of the same conversation.
@@ -88,9 +88,24 @@ _INSIGHT_TEMPERATURE = 0.7
 _CACHE_BETA_HEADER = {"anthropic-beta": "prompt-caching-2024-07-31"}
 
 
-def _system_blocks(system: str) -> list[dict]:
-    """Wraps the system string into a content block with cache_control."""
-    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+def _system_blocks(static: str, dynamic: str = "") -> list[dict]:
+    """
+    Returns Anthropic system content blocks.
+
+    The static block (identity, directives — identical across all requests)
+    carries cache_control so Anthropic caches it after the first call.
+    The dynamic block (per-request persona + RAG context) is appended without
+    cache_control so it never invalidates the cached static block.
+
+    Anthropic requires ≥ 1024 tokens in the cached block; _SYSTEM_PROMPT in
+    chat_service.py is sized to exceed this threshold comfortably.
+    """
+    blocks: list[dict] = [
+        {"type": "text", "text": static, "cache_control": {"type": "ephemeral"}}
+    ]
+    if dynamic:
+        blocks.append({"type": "text", "text": dynamic})
+    return blocks
 
 
 # ── Base class ─────────────────────────────────────────────────────────────────
@@ -103,16 +118,20 @@ class LLMProvider:
         system: str,
         messages: list[dict],
         max_tokens: int = _DEFAULT_MAX_TOKENS,
+        *,
+        dynamic_system: str = "",
     ) -> tuple[str, Optional[int]]:
         """
         Non-streaming completion.
 
         Parameters
         ----------
-        system   : System prompt text.
-        messages : Conversation turns — [{"role": "user"|"assistant", "content": "..."}].
-                   Do NOT include a system-role dict here; pass it via `system`.
-        max_tokens: Maximum tokens to generate.
+        system         : Static system prompt — cached by Anthropic when ≥ 1024 tokens.
+        messages       : Conversation turns — [{"role": "user"|"assistant", "content": "..."}].
+                         Do NOT include a system-role dict here; pass it via `system`.
+        max_tokens     : Maximum tokens to generate.
+        dynamic_system : Per-request context (persona, RAG) appended after the static
+                         prompt without cache_control so it never invalidates the cache.
 
         Returns
         -------
@@ -126,6 +145,8 @@ class LLMProvider:
         system: str,
         messages: list[dict],
         usage_out: list,
+        *,
+        dynamic_system: str = "",
     ) -> AsyncGenerator[str, None]:
         """
         Streaming completion.
@@ -133,6 +154,8 @@ class LLMProvider:
         Yields plain text chunks. When the stream is exhausted, appends
         tokens_used (int or None) to usage_out so callers can retrieve it
         after the async-for loop.
+
+        dynamic_system: per-request context appended after the cached static prompt.
         """
         raise NotImplementedError
         # Make Python recognise this as an async generator in subclasses:
@@ -156,8 +179,11 @@ class OpenAIProvider(LLMProvider):
         system: str,
         messages: list[dict],
         max_tokens: int = _DEFAULT_MAX_TOKENS,
+        *,
+        dynamic_system: str = "",
     ) -> tuple[str, Optional[int]]:
-        full_messages = [{"role": "system", "content": system}, *messages]
+        combined = system + ("\n\n" + dynamic_system if dynamic_system else "")
+        full_messages = [{"role": "system", "content": combined}, *messages]
         completion = await self._client().chat.completions.create(
             model=self._model,
             messages=full_messages,  # type: ignore[arg-type]
@@ -174,8 +200,11 @@ class OpenAIProvider(LLMProvider):
         system: str,
         messages: list[dict],
         usage_out: list,
+        *,
+        dynamic_system: str = "",
     ) -> AsyncGenerator[str, None]:
-        full_messages = [{"role": "system", "content": system}, *messages]
+        combined = system + ("\n\n" + dynamic_system if dynamic_system else "")
+        full_messages = [{"role": "system", "content": combined}, *messages]
         raw_stream = await self._client().chat.completions.create(
             model=self._model,
             messages=full_messages,  # type: ignore[arg-type]
@@ -226,8 +255,10 @@ class AnthropicProvider(LLMProvider):
         system: str,
         messages: list[dict],
         max_tokens: int = _DEFAULT_MAX_TOKENS,
+        *,
+        dynamic_system: str = "",
     ) -> tuple[str, Optional[int]]:
-        system_blocks = _system_blocks(system)
+        system_blocks = _system_blocks(system, dynamic_system)
         if self._thinking:
             # max_tokens must exceed budget_tokens; we add a buffer for the reply.
             effective_max = self._thinking_budget + _THINKING_OUTPUT_BUFFER
@@ -266,11 +297,13 @@ class AnthropicProvider(LLMProvider):
         system: str,
         messages: list[dict],
         usage_out: list,
+        *,
+        dynamic_system: str = "",
     ) -> AsyncGenerator[str, None]:
         async with self._client().messages.stream(
             model=self._model,
             max_tokens=_CHAT_STREAM_MAX_TOKENS,
-            system=_system_blocks(system),  # type: ignore[arg-type]
+            system=_system_blocks(system, dynamic_system),  # type: ignore[arg-type]
             messages=messages,  # type: ignore[arg-type]
             extra_headers=_CACHE_BETA_HEADER,
         ) as s:
@@ -296,6 +329,13 @@ def get_chat_provider() -> LLMProvider:
     """Return the provider for main chat sessions (Claude Haiku, no thinking)."""
     cfg = settings.anthropic_config
     return AnthropicProvider(api_key=cfg["api_key"], model=cfg["chat_model"])
+
+
+def get_crisis_chat_provider() -> LLMProvider:
+    """Return a higher-capability provider for HIGH/CRITICAL crisis responses (Claude Sonnet)."""
+    cfg = settings.anthropic_config
+    model = cfg.get("crisis_model", "claude-sonnet-4-6")
+    return AnthropicProvider(api_key=cfg["api_key"], model=model)
 
 
 def get_insight_provider() -> LLMProvider:

@@ -19,7 +19,7 @@ O cache é invalidado toda vez que novos fatos são inseridos ou atualizados.
 Deduplicação
 ------------
 Antes de inserir um novo fato, o serviço busca fatos existentes da mesma
-categoria com embedding similar (cosine similarity > DEDUP_THRESHOLD = 0.92).
+categoria com embedding similar (cosine similarity > DEDUP_THRESHOLD = 0.82).
 Se encontrar um, o texto e o embedding são atualizados no lugar — evitando
 acúmulo de fatos redundantes.
 
@@ -50,10 +50,21 @@ from app.models.user_persona_fact import PersonaCategory, UserPersonaFact
 
 logger = logging.getLogger(__name__)
 
+# ── Redis singleton (shared from app.state.redis, injected at lifespan) ────────
+_redis_client = None
+
+
+def configure_redis(client) -> None:
+    global _redis_client
+    _redis_client = client
+
+
 # ── Constantes ─────────────────────────────────────────────────────────────────
 
-# Cosine similarity acima deste threshold → considera duplicata e atualiza
-DEDUP_THRESHOLD = 0.92
+# Cosine similarity acima deste threshold → considera duplicata e atualiza.
+# 0.82 elimina mais redundâncias (ex: "tem ansiedade" ≈ "sofre de ansiedade")
+# sem fundir fatos distintos que compartilham apenas o tema.
+DEDUP_THRESHOLD = 0.82
 
 # Máximo de fatos retornados por categoria no contexto da persona
 MAX_FACTS_PER_CATEGORY = 3
@@ -123,30 +134,13 @@ def _persona_cache_key(user_id: uuid.UUID) -> str:
     return f"persona:{user_id}"
 
 
-async def _get_redis():
-    """Retorna cliente Redis assíncrono. Importação lazy para não quebrar se Redis
-    não estiver configurado em ambiente de testes."""
-    try:
-        import redis.asyncio as aioredis
-        client = aioredis.Redis(
-            host=settings.redis_host,
-            port=settings.redis_port,
-            password=settings.redis_password,
-            ssl=settings.redis_tls,
-            decode_responses=True,
-        )
-        return client
-    except Exception:
-        return None
-
-
 async def invalidate_persona_cache(user_id: uuid.UUID) -> None:
     """Apaga o cache Redis da persona do usuário."""
+    redis = _redis_client
+    if not redis:
+        return
     try:
-        redis = await _get_redis()
-        if redis:
-            await redis.delete(_persona_cache_key(user_id))
-            await redis.aclose()
+        await redis.delete(_persona_cache_key(user_id))
     except Exception as exc:
         logger.warning("Failed to invalidate persona cache user=%s: %s", user_id, exc)
 
@@ -166,6 +160,27 @@ async def _generate_embedding(text_input: str) -> list[float] | None:
     except Exception as exc:
         logger.warning("Embedding generation failed: %s", exc)
         return None
+
+
+async def _generate_embeddings_batch(texts: list[str]) -> list[list[float] | None]:
+    """
+    Gera embeddings para múltiplos textos em uma única chamada à API OpenAI.
+    Retorna lista paralela ao input — None nas posições com erro.
+    """
+    if not texts:
+        return []
+    try:
+        client = _get_openai_client()
+        response = await client.embeddings.create(
+            model=_get_embedding_model(),
+            input=[t[:8000] for t in texts],
+            dimensions=EMBEDDING_DIM,
+        )
+        # response.data é ordenado pelo índice de input
+        return [item.embedding for item in response.data]
+    except Exception as exc:
+        logger.warning("Batch embedding generation failed: %s", exc)
+        return [None] * len(texts)
 
 
 # ── Extração de fatos ─────────────────────────────────────────────────────────
@@ -276,7 +291,7 @@ async def _upsert_fact(
         existing.embedding = embedding
         existing.source = source
         existing.source_id = source_id
-        existing.updated_at = datetime.utcnow()
+        existing.updated_at = datetime.now(timezone.utc)
         logger.debug("Persona fact updated: user=%s category=%s", user_id, category.value)
     else:
         new_fact = UserPersonaFact(
@@ -320,25 +335,35 @@ async def extract_and_upsert_facts(
         if not raw_facts:
             return
 
-        inserted = 0
+        # Passo 1: valida e normaliza os fatos antes de qualquer chamada de API
+        valid_facts: list[tuple[PersonaCategory, str, float]] = []
         for raw in raw_facts:
+            category_str = raw.get("category", "")
             try:
-                category_str = raw.get("category", "")
-                try:
-                    category = PersonaCategory(category_str)
-                except ValueError:
-                    logger.debug("Unknown persona category '%s' — skipping", category_str)
-                    continue
+                category = PersonaCategory(category_str)
+            except ValueError:
+                logger.debug("Unknown persona category '%s' — skipping", category_str)
+                continue
 
-                fact_text = (raw.get("fact_text") or "").strip()
-                if not fact_text:
-                    continue
+            fact_text = (raw.get("fact_text") or "").strip()
+            if not fact_text:
+                continue
 
-                confidence = float(raw.get("confidence", 0.8))
-                confidence = max(0.0, min(1.0, confidence))
+            confidence = float(raw.get("confidence", 0.8))
+            confidence = max(0.0, min(1.0, confidence))
+            valid_facts.append((category, fact_text, confidence))
 
-                embedding = await _generate_embedding(fact_text)
+        if not valid_facts:
+            return
 
+        # Passo 2: gera todos os embeddings em uma única chamada batch
+        texts = [ft for _, ft, _ in valid_facts]
+        embeddings = await _generate_embeddings_batch(texts)
+
+        # Passo 3: upsert de cada fato com seu embedding
+        inserted = 0
+        for (category, fact_text, confidence), embedding in zip(valid_facts, embeddings):
+            try:
                 await _upsert_fact(
                     db=db,
                     user_id=user.id,
@@ -350,9 +375,8 @@ async def extract_and_upsert_facts(
                     embedding=embedding,
                 )
                 inserted += 1
-
             except Exception as fact_exc:
-                logger.warning("Failed to process individual fact: %s", fact_exc)
+                logger.warning("Failed to upsert individual fact: %s", fact_exc)
                 continue
 
         if inserted > 0:
@@ -374,13 +398,18 @@ async def get_persona_context(
     db: AsyncSession,
     user: User,
     max_facts: int = MAX_FACTS_PER_CATEGORY,
+    query_text: str = "",
 ) -> str:
     """
     Retorna um bloco de texto formatado com os fatos mais relevantes da persona
     do usuário, pronto para ser injetado no system prompt da IA.
 
-    O resultado é cacheado no Redis por 24h. Se não houver fatos cadastrados,
-    retorna string vazia (sem impacto nos prompts).
+    Quando `query_text` é fornecido, faz busca por similaridade semântica
+    (top_k=8 fatos mais relevantes para a query) — resultados por query não
+    são cacheados pois variam por interação.
+
+    Sem `query_text`: retorna todos os fatos agrupados por categoria, cacheados
+    no Redis por 24h. Se não houver fatos, retorna string vazia.
 
     Formato do retorno:
         Perfil do usuário (personalização):
@@ -388,21 +417,22 @@ async def get_persona_context(
         - [Rotina] Trabalha em home office com dois filhos pequenos
         - [Gatilho emocional] Sente ansiedade antes de reuniões importantes
     """
+    # ── Path 1: busca por similaridade quando query_text é fornecido ──────────
+    if query_text.strip():
+        return await _get_persona_context_by_similarity(db, user, query_text, top_k=8)
+
+    # ── Path 2: todos os fatos agrupados por categoria, com cache ─────────────
     cache_key = _persona_cache_key(user.id)
 
-    # ── Tenta cache Redis ─────────────────────────────────────────────────────
     try:
-        redis = await _get_redis()
+        redis = _redis_client
         if redis:
             cached = await redis.get(cache_key)
             if cached is not None:
-                await redis.aclose()
                 return cached
-            await redis.aclose()
     except Exception as exc:
         logger.warning("Redis read failed for persona cache: %s", exc)
 
-    # ── Consulta banco ────────────────────────────────────────────────────────
     try:
         result = await db.execute(
             select(UserPersonaFact)
@@ -417,7 +447,6 @@ async def get_persona_context(
         if not all_facts:
             return ""
 
-        # Agrupa por categoria e limita a max_facts por categoria
         by_category: dict[PersonaCategory, list[UserPersonaFact]] = {}
         for fact in all_facts:
             cat = fact.category
@@ -426,7 +455,6 @@ async def get_persona_context(
             if len(by_category[cat]) < max_facts:
                 by_category[cat].append(fact)
 
-        # Monta bloco de texto
         lines: list[str] = ["Perfil do usuário (use para personalizar sua resposta):"]
         category_order = [
             PersonaCategory.contexto,
@@ -447,14 +475,89 @@ async def get_persona_context(
         logger.error("get_persona_context DB query failed: user=%s %s", user.id, exc)
         return ""
 
-    # ── Armazena no Redis ─────────────────────────────────────────────────────
     if context:
         try:
-            redis = await _get_redis()
+            redis = _redis_client
             if redis:
                 await redis.set(cache_key, context, ex=PERSONA_CACHE_TTL)
-                await redis.aclose()
         except Exception as exc:
             logger.warning("Redis write failed for persona cache: %s", exc)
 
     return context
+
+
+async def _get_persona_context_by_similarity(
+    db: AsyncSession,
+    user: User,
+    query_text: str,
+    top_k: int = 8,
+) -> str:
+    """
+    Recupera os `top_k` fatos da persona mais similares ao `query_text` por
+    busca vetorial. Não usa cache — resultado é por query.
+    """
+    try:
+        embedding = await _generate_embedding(query_text[:2000])
+        if embedding is None:
+            return ""
+
+        vec_str = f"[{','.join(str(x) for x in embedding)}]"
+        result = await db.execute(
+            text(
+                """
+                SELECT id, category, fact_text, confidence,
+                       embedding <=> CAST(:vec AS vector) AS distance
+                FROM user_persona_facts
+                WHERE user_id = :uid
+                  AND embedding IS NOT NULL
+                ORDER BY distance
+                LIMIT :k
+                """
+            ),
+            {"vec": vec_str, "uid": str(user.id), "k": top_k},
+        )
+        rows = result.fetchall()
+
+        if not rows:
+            return ""
+
+        lines: list[str] = ["Perfil do usuário (use para personalizar sua resposta):"]
+        for row in rows:
+            try:
+                cat = PersonaCategory(row.category)
+                label = _CATEGORY_LABELS.get(cat, row.category.capitalize())
+            except ValueError:
+                label = row.category.capitalize()
+            lines.append(f"- [{label}] {row.fact_text}")
+
+        return "\n".join(lines) if len(lines) > 1 else ""
+
+    except Exception as exc:
+        logger.warning("get_persona_context_by_similarity failed: user=%s %s", user.id, exc)
+        return ""
+
+
+async def bg_extract_and_upsert_facts(
+    user_id: uuid.UUID,
+    text_input: str,
+    source: str,
+    source_id: uuid.UUID,
+) -> None:
+    """
+    Background-safe wrapper for extract_and_upsert_facts.
+
+    Opens its own DB session so it can safely run after the request-scoped
+    session has been closed. Silences all exceptions.
+    """
+    from app.database import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        try:
+            user = await db.get(User, user_id)
+            if user:
+                await extract_and_upsert_facts(db, user, text_input, source, source_id)
+        except Exception as exc:
+            logger.warning(
+                "bg_extract_and_upsert_facts failed silently: user=%s source=%s %s",
+                user_id, source, exc,
+            )

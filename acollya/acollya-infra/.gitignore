@@ -1,0 +1,26 @@
+# Segredos
+.env
+.env.*
+*.pem
+*.key
+
+# CDK
+cdk.out/
+cdk.context.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Node (CDK CLI usa Node)
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store

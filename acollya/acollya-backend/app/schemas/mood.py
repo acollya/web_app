@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ── Supported mood labels ──────────────────────────────────────────────────────
@@ -46,6 +46,13 @@ class MoodCheckinCreate(BaseModel):
         min_length=1,
         max_length=50,
     )
+
+    @field_validator('mood')
+    @classmethod
+    def validate_mood(cls, v: str) -> str:
+        if v not in VALID_MOODS:
+            raise ValueError(f"Humor inválido: '{v}'. Valores aceitos: {sorted(VALID_MOODS)}")
+        return v
     intensity: int = Field(
         ge=1,
         le=5,

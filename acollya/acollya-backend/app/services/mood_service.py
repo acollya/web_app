@@ -37,11 +37,13 @@ from collections import Counter
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal
 
+from fastapi import BackgroundTasks
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AuthorizationError, NotFoundError
 from app.core.llm_provider import get_insight_provider, _INSIGHT_MAX_TOKENS
+from app.database import AsyncSessionLocal
 from app.models.journal_entry import JournalEntry
 from app.models.mood_checkin import MoodCheckin
 from app.models.user import User
@@ -183,7 +185,7 @@ async def _run_insight(db: AsyncSession, user: User, checkin: MoodCheckin) -> No
         if checkin.note:
             rag_query += f". {checkin.note}"
 
-        persona_context = await get_persona_context(db, user)
+        persona_context = await get_persona_context(db, user, query_text=rag_query)
         rag_context = await retrieve_context(db, user, rag_query)
 
         # Blocos nomeados — o modelo atende melhor a seções com cabeçalhos distintos
@@ -223,10 +225,28 @@ async def _run_insight(db: AsyncSession, user: User, checkin: MoodCheckin) -> No
         )
 
 
+# ── Background task wrappers ───────────────────────────────────────────────────
+
+async def _bg_embed_checkin(checkin_id: uuid.UUID, embed_text: str) -> None:
+    async with AsyncSessionLocal() as db:
+        await embed_and_store(db, checkin_id, "mood_checkins", embed_text)
+
+
+async def _bg_run_insight(checkin_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    async with AsyncSessionLocal() as db:
+        try:
+            checkin = await db.get(MoodCheckin, checkin_id)
+            user = await db.get(User, user_id)
+            if checkin and user:
+                await _run_insight(db, user, checkin)
+        except Exception as exc:
+            logger.warning("_bg_run_insight failed: checkin=%s %s", checkin_id, exc)
+
+
 # ── Create ─────────────────────────────────────────────────────────────────────
 
 async def create_checkin(
-    db: AsyncSession, user: User, data: MoodCheckinCreate
+    db: AsyncSession, user: User, data: MoodCheckinCreate, background_tasks: BackgroundTasks
 ) -> MoodCheckinResponse:
     """
     Persist a new mood check-in and generate an AI insight inline.
@@ -254,13 +274,11 @@ async def create_checkin(
 
     logger.info("Mood check-in created: user=%s mood=%s", user.id, data.mood)
 
-    # Embedding para RAG — texto combinado de mood + nota
     embed_text = f"{checkin.mood} (intensidade {checkin.intensity}/5)"
     if checkin.note:
         embed_text += f". {checkin.note}"
-    await embed_and_store(db, checkin.id, "mood_checkins", embed_text)
-
-    await _run_insight(db, user, checkin)
+    background_tasks.add_task(_bg_embed_checkin, checkin.id, embed_text)
+    background_tasks.add_task(_bg_run_insight, checkin.id, user.id)
 
     return MoodCheckinResponse.model_validate(checkin)
 

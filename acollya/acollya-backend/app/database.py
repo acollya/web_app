@@ -10,7 +10,6 @@ Lambda connection pooling:
   For 100k+ users: Enable RDS Proxy in DatabaseStack and increase pool_size.
 """
 import logging
-from typing import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -54,18 +53,6 @@ class Base(DeclarativeBase):
     pass
 
 
-# ── Dependency ────────────────────────────────────────────────────────────────
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
-    """FastAPI dependency: yields an async DB session, closes on response."""
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
 
 
 # ── Init ──────────────────────────────────────────────────────────────────────

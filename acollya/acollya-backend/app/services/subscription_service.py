@@ -100,8 +100,9 @@ async def get_status(db: AsyncSession, user: User) -> SubscriptionStatusResponse
         select(Subscription)
         .where(Subscription.user_id == user.id)
         .order_by(Subscription.created_at.desc())
+        .limit(1)
     )
-    sub: Optional[Subscription] = result.scalar_one_or_none()
+    sub: Optional[Subscription] = result.scalars().first()
 
     now = datetime.now(UTC)
 

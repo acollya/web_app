@@ -52,13 +52,27 @@ class RefreshRequest(BaseModel):
 
 class GoogleAuthRequest(BaseModel):
     id_token: str = Field(description="Google ID token from the client SDK")
-    terms_accepted: bool = True
+    terms_accepted: bool = Field(description="User must explicitly accept terms of service")
+
+    @field_validator("terms_accepted")
+    @classmethod
+    def must_accept_terms(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("You must accept the terms of service")
+        return v
 
 
 class AppleAuthRequest(BaseModel):
     identity_token: str = Field(description="Apple identity token (JWT) from Sign in with Apple")
     full_name: Optional[str] = Field(None, description="User's full name (only sent on first sign-in)")
-    terms_accepted: bool = True
+    terms_accepted: bool = Field(description="User must explicitly accept terms of service")
+
+    @field_validator("terms_accepted")
+    @classmethod
+    def must_accept_terms(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("You must accept the terms of service")
+        return v
 
 
 # ── Responses ──────────────────────────────────────────────────────────────────
