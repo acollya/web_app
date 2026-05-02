@@ -65,9 +65,25 @@ _TOP_K_FINAL = 5
 # Mood check-ins são curtos e muito específicos → threshold mais restrito.
 # Diários são longos e ricos → threshold mais permissivo.
 # Chat está no meio-termo.
-_MAX_DISTANCE_CHAT    = 0.32   # similarity > 0.68 — mensagens de chat
-_MAX_DISTANCE_JOURNAL = 0.36   # similarity > 0.64 — entradas de diário
-_MAX_DISTANCE_MOOD    = 0.28   # similarity > 0.72 — check-ins de humor
+_MAX_DISTANCE_CHAT     = 0.32   # similarity > 0.68 — mensagens de chat
+_MAX_DISTANCE_JOURNAL  = 0.36   # similarity > 0.64 — entradas de diário
+_MAX_DISTANCE_MOOD     = 0.28   # similarity > 0.72 — check-ins de humor
+_MAX_DISTANCE_CLINICAL = 0.40   # similarity > 0.60 — base de conhecimento clínico
+                                # (mais permissivo: cobertura clínica é ampla
+                                #  e o conteúdo não é específico do usuário)
+_MAX_DISTANCE_CHAPTERS = 0.38   # similarity > 0.62 — capítulos de programas
+                                # (entre chat e journal: conteúdo estruturado,
+                                #  mais longo que mood mas mais focado que clínico)
+
+# Score multiplier aplicado aos resultados da base clínica para que ela seja
+# tratada como contexto SUPLEMENTAR, sem competir em igualdade com o histórico
+# pessoal do usuário (que tem maior valor terapêutico).
+_CLINICAL_SCORE_WEIGHT = 0.85
+
+# Score multiplier para capítulos de programas — ligeiramente abaixo da base
+# clínica pois os capítulos são mais longos e mais genéricos; o histórico
+# pessoal do usuário tem maior relevância terapêutica imediata.
+_CHAPTERS_SCORE_WEIGHT = 0.80
 
 _EMBEDDING_DIM = 1536
 
@@ -346,6 +362,105 @@ async def retrieve_context(
             # mood usa score vetorial invertido (distância → similaridade) com decay
             vec_score = (1.0 / (_RRF_K + 1)) * (1 - row.distance)
             score = vec_score * _time_decay_factor(row.created_at)
+            fragments.append((score, line))
+
+        # ── chapters: hybrid BM25 + vetorial com RRF (sem time decay) ────────────
+        # Capítulos de programas terapêuticos — catálogo GLOBAL (sem user_id).
+        # Apenas capítulos de texto (content_type='text') têm embedding útil.
+        # Score final multiplicado por _CHAPTERS_SCORE_WEIGHT para tratar como
+        # contexto suplementar ao histórico pessoal do usuário.
+        rows = await db.execute(
+            text(
+                """
+                WITH vec_ranked AS (
+                    SELECT c.id, c.title AS chapter_title, c.content,
+                           p.title AS program_title,
+                           row_number() OVER (ORDER BY c.embedding <=> CAST(:vec AS vector)) AS vec_rank
+                    FROM chapters c
+                    JOIN programs p ON c.program_id = p.id
+                    WHERE c.embedding IS NOT NULL
+                      AND c.content_type = 'text'
+                      AND c.embedding <=> CAST(:vec AS vector) < :max_dist
+                    LIMIT :k_inner
+                ),
+                bm25_ranked AS (
+                    SELECT c.id, c.title AS chapter_title, c.content,
+                           p.title AS program_title,
+                           row_number() OVER (ORDER BY ts_rank_cd(c.ts_content, plainto_tsquery('portuguese', :query)) DESC) AS bm25_rank
+                    FROM chapters c
+                    JOIN programs p ON c.program_id = p.id
+                    WHERE c.ts_content @@ plainto_tsquery('portuguese', :query)
+                      AND c.content_type = 'text'
+                    LIMIT :k_inner
+                )
+                SELECT COALESCE(v.id, b.id) AS id,
+                       COALESCE(v.chapter_title, b.chapter_title) AS chapter_title,
+                       COALESCE(v.content, b.content) AS content,
+                       COALESCE(v.program_title, b.program_title) AS program_title,
+                       COALESCE(1.0 / (:rrf_k + v.vec_rank), 0) +
+                       COALESCE(1.0 / (:rrf_k + b.bm25_rank), 0) AS rrf_score
+                FROM vec_ranked v
+                FULL OUTER JOIN bm25_ranked b ON v.id = b.id
+                ORDER BY rrf_score DESC
+                LIMIT :k
+                """
+            ),
+            {
+                "vec": vec, "query": query_text[:500],
+                "max_dist": _MAX_DISTANCE_CHAPTERS, "rrf_k": _RRF_K,
+                "k_inner": _TOP_K_PER_TABLE * 3, "k": _TOP_K_PER_TABLE,
+            },
+        )
+        for row in rows.fetchall():
+            snippet = row.content[:200].replace("\n", " ")
+            line = f'[Programa: {row.program_title} — {row.chapter_title}] "{snippet}"'
+            score = row.rrf_score * _CHAPTERS_SCORE_WEIGHT
+            fragments.append((score, line))
+
+        # ── clinical_knowledge: hybrid BM25 + vetorial com RRF (sem time decay) ─
+        # Conteúdo TCC/TRS estático e GLOBAL (não depende de user_id).
+        # Score final é multiplicado por _CLINICAL_SCORE_WEIGHT para tratar a
+        # base como contexto suplementar ao histórico pessoal do usuário.
+        rows = await db.execute(
+            text(
+                """
+                WITH vec_ranked AS (
+                    SELECT id, category, title, chunk_text,
+                           row_number() OVER (ORDER BY embedding <=> CAST(:vec AS vector)) AS vec_rank
+                    FROM clinical_knowledge
+                    WHERE embedding IS NOT NULL
+                      AND embedding <=> CAST(:vec AS vector) < :max_dist
+                    LIMIT :k_inner
+                ),
+                bm25_ranked AS (
+                    SELECT id, category, title, chunk_text,
+                           row_number() OVER (ORDER BY ts_rank_cd(ts_content, plainto_tsquery('portuguese', :query)) DESC) AS bm25_rank
+                    FROM clinical_knowledge
+                    WHERE ts_content @@ plainto_tsquery('portuguese', :query)
+                    LIMIT :k_inner
+                )
+                SELECT COALESCE(v.id, b.id) AS id,
+                       COALESCE(v.category, b.category) AS category,
+                       COALESCE(v.title, b.title) AS title,
+                       COALESCE(v.chunk_text, b.chunk_text) AS chunk_text,
+                       COALESCE(1.0 / (:rrf_k + v.vec_rank), 0) +
+                       COALESCE(1.0 / (:rrf_k + b.bm25_rank), 0) AS rrf_score
+                FROM vec_ranked v
+                FULL OUTER JOIN bm25_ranked b ON v.id = b.id
+                ORDER BY rrf_score DESC
+                LIMIT :k
+                """
+            ),
+            {
+                "vec": vec, "query": query_text[:500],
+                "max_dist": _MAX_DISTANCE_CLINICAL, "rrf_k": _RRF_K,
+                "k_inner": _TOP_K_PER_TABLE * 3, "k": _TOP_K_PER_TABLE,
+            },
+        )
+        for row in rows.fetchall():
+            snippet = row.chunk_text[:240].replace("\n", " ")
+            line = f'[Conhecimento clínico - {row.category}] "{snippet}"'
+            score = row.rrf_score * _CLINICAL_SCORE_WEIGHT
             fragments.append((score, line))
 
         if not fragments:

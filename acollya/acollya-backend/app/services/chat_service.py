@@ -54,6 +54,7 @@ from app.models.chat_session import ChatSession
 from app.models.user import User
 from app.services.persona_service import extract_and_upsert_facts, get_persona_context
 from app.services.rag_service import embed_and_store, retrieve_context
+from app.services.routing_service import classify_intent, get_tone_modifier
 from app.schemas.chat import (
     ChatHistoryResponse,
     ChatMessageResponse,
@@ -382,6 +383,7 @@ def _build_conversation(
     persona_context: str = "",
     rag_context: str = "",
     rolling_summary: str = "",
+    tone_modifier: str = "",
 ) -> tuple[str, str, list[dict]]:
     """
     Returns (static_system, dynamic_system, conversation_messages).
@@ -389,13 +391,18 @@ def _build_conversation(
     static_system = _SYSTEM_PROMPT — identical across all requests, so
     Anthropic caches it after the first call (requires ≥ 1024 tokens).
 
-    dynamic_system = per-request persona + RAG context + rolling summary —
-    changes every call and must not carry cache_control or it would
-    invalidate the static cache.
+    dynamic_system = per-request persona + RAG context + rolling summary +
+    tone modifier (clinical routing). Changes every call and must not carry
+    cache_control or it would invalidate the static cache.
+
+    The tone modifier is prepended so the model reads it first and applies the
+    requested register (escuta vs orientação) consistently across the reply.
 
     OpenAI providers receive both concatenated in a single system role message.
     """
     sections: list[str] = []
+    if tone_modifier:
+        sections.append(tone_modifier)
     if rolling_summary:
         sections.append(f"## Resumo da conversa anterior\n{rolling_summary}")
     if persona_context:
@@ -539,13 +546,27 @@ async def send_message(
     crisis = await detect_crisis_enhanced(user_content)
     crisis_level = crisis.level
 
-    # Build context (history + persona + RAG + rolling summary)
+    # Clinical intent routing — skip on crisis: the static system prompt's
+    # "Protocolo de crise" section drives crisis behaviour; adding a tone
+    # modifier on top would dilute it and adds avoidable latency (~300ms).
+    if crisis_level not in (CrisisLevel.HIGH, CrisisLevel.CRITICAL):
+        intent = await classify_intent(user_content)
+        tone_modifier = get_tone_modifier(intent)
+    else:
+        tone_modifier = ""
+
+    # Build context (history + persona + RAG + rolling summary + tone)
     history = await _load_history(db, session_id)
     persona_context = await get_persona_context(db, user, query_text=user_content)
     rag_context = await retrieve_context(db, user, user_content)
     rolling_summary = await _get_session_summary(session_id)
     static_system, dynamic_system, conversation = _build_conversation(
-        history, user_content, persona_context, rag_context, rolling_summary
+        history,
+        user_content,
+        persona_context,
+        rag_context,
+        rolling_summary,
+        tone_modifier=tone_modifier,
     )
 
     # Persist user message BEFORE the LLM call so it survives any LLM failure.
@@ -578,6 +599,19 @@ async def send_message(
     if crisis_level in (CrisisLevel.HIGH, CrisisLevel.CRITICAL):
         assistant_content += CVV_MESSAGE
 
+    # Deterioration check (non-streaming path): append therapist suggestion when
+    # the user is showing a deteriorating mood trajectory with medium/high
+    # confidence. Swallows all exceptions so it never blocks a response.
+    from app.services.sentiment_trajectory_service import (  # noqa: PLC0415
+        check_deterioration,
+        get_therapist_suggestion,
+    )
+    try:
+        if await check_deterioration(db, user):
+            assistant_content += get_therapist_suggestion()
+    except Exception:
+        pass  # never block the response
+
     # Auto-title
     await _maybe_set_title(db, session, user_content)
 
@@ -604,8 +638,8 @@ async def send_message(
         await _bg_maybe_summarize(session_id)
 
     logger.info(
-        "Chat message sent (non-stream): user=%s session=%s tokens=%s crisis=%s",
-        user.id, session_id, tokens_used, crisis_level,
+        "Chat message sent (non-stream): user=%s session=%s tokens=%s crisis=%s intent=%s",
+        user.id, session_id, tokens_used, crisis_level, intent,
     )
 
     return ChatSendResponse(
@@ -649,13 +683,25 @@ async def stream_message(
     crisis = await detect_crisis_enhanced(user_content)
     crisis_level = crisis.level
 
-    # Build context (history + persona + RAG + rolling summary)
+    # Clinical intent routing — skip on crisis (same reason as send_message).
+    if crisis_level not in (CrisisLevel.HIGH, CrisisLevel.CRITICAL):
+        intent = await classify_intent(user_content)
+        tone_modifier = get_tone_modifier(intent)
+    else:
+        tone_modifier = ""
+
+    # Build context (history + persona + RAG + rolling summary + tone)
     history = await _load_history(db, session_id)
     persona_context = await get_persona_context(db, user, query_text=user_content)
     rag_context = await retrieve_context(db, user, user_content)
     rolling_summary = await _get_session_summary(session_id)
     static_system, dynamic_system, conversation = _build_conversation(
-        history, user_content, persona_context, rag_context, rolling_summary
+        history,
+        user_content,
+        persona_context,
+        rag_context,
+        rolling_summary,
+        tone_modifier=tone_modifier,
     )
 
     # Persist user message BEFORE the LLM call so it is never lost on failure.
@@ -720,6 +766,23 @@ async def stream_message(
         cvv_payload = ChatStreamChunk(event="delta", text=CVV_MESSAGE)
         yield f"data: {cvv_payload.model_dump_json()}\n\n"
 
+    # Deterioration check: emit therapist suggestion as a final delta BEFORE the
+    # "done" event. Runs after all LLM chunks have been yielded and after the
+    # optional CVV delta, so it only adds latency to the "done" event (never
+    # to the first token). Swallows all exceptions — must never block the response.
+    from app.services.sentiment_trajectory_service import (  # noqa: PLC0415
+        check_deterioration,
+        get_therapist_suggestion,
+    )
+    try:
+        if await check_deterioration(db, user):
+            suggestion = get_therapist_suggestion()
+            assistant_content += suggestion
+            suggestion_payload = ChatStreamChunk(event="delta", text=suggestion)
+            yield f"data: {suggestion_payload.model_dump_json()}\n\n"
+    except Exception:
+        pass  # never block the response
+
     # Auto-title
     await _maybe_set_title(db, session, user_content)
 
@@ -752,6 +815,6 @@ async def stream_message(
         await _bg_maybe_summarize(session_id)
 
     logger.info(
-        "Chat message sent (stream): user=%s session=%s tokens=%s crisis=%s",
-        user.id, session_id, tokens_used, crisis_level,
+        "Chat message sent (stream): user=%s session=%s tokens=%s crisis=%s intent=%s",
+        user.id, session_id, tokens_used, crisis_level, intent,
     )

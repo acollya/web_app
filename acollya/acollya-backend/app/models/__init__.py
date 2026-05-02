@@ -11,10 +11,12 @@ from app.models.program import Program, Chapter
 from app.models.therapist import Therapist
 from app.models.user_session import UserSession
 from app.models.user_persona_fact import UserPersonaFact, PersonaCategory
+from app.models.clinical_knowledge import ClinicalKnowledge
 
 __all__ = [
     "User", "Subscription", "MoodCheckin", "JournalEntry",
     "ChatSession", "ChatMessage", "Appointment", "ProgramProgress",
     "Program", "Chapter", "Therapist", "UserSession",
     "UserPersonaFact", "PersonaCategory",
+    "ClinicalKnowledge",
 ]

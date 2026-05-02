@@ -14,6 +14,7 @@ from stacks.cache_stack import CacheStack
 from stacks.storage_stack import StorageStack
 from stacks.secrets_stack import SecretsStack
 from stacks.api_stack import ApiStack
+from stacks.jobs_stack import JobsStack
 from stacks.monitoring_stack import MonitoringStack
 
 app = cdk.App()
@@ -75,6 +76,27 @@ api_stack.add_dependency(db_stack)
 api_stack.add_dependency(cache_stack)
 api_stack.add_dependency(storage_stack)
 api_stack.add_dependency(secrets_stack)
+
+# ── Scheduled background jobs (EventBridge cron Lambdas) ────────────────────
+# Runs alongside ApiStack — separate stack so cron lifecycle doesn't couple
+# to the user-facing API deploys/rollbacks.
+jobs_stack = JobsStack(
+    app, f"AcollyaJobs-{stage}",
+    vpc=vpc_stack.vpc,
+    lambda_sg=vpc_stack.lambda_sg,
+    db_secret=db_stack.db_secret,
+    db_host=db_stack.proxy_endpoint,
+    redis_host=cache_stack.redis_host,
+    redis_port=cache_stack.redis_port,
+    redis_tls=cache_stack.redis_tls,
+    media_bucket=storage_stack.media_bucket,
+    env=env,
+    stage=stage,
+)
+jobs_stack.add_dependency(db_stack)
+jobs_stack.add_dependency(cache_stack)
+jobs_stack.add_dependency(storage_stack)
+jobs_stack.add_dependency(secrets_stack)
 
 monitoring_stack = MonitoringStack(
     app, f"AcollyaMonitoring-{stage}",

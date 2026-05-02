@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, func
 from sqlalchemy import Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -52,6 +53,7 @@ class Chapter(Base):
     content_type: Mapped[str] = mapped_column(Text, nullable=False, default="text")  # text | video | audio
     duration_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     video_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    embedding: Mapped[Optional[list]] = mapped_column(Vector(1536), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     program: Mapped["Program"] = relationship(back_populates="chapters")

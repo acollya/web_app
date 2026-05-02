@@ -47,6 +47,26 @@ async def lifespan(app: FastAPI):
     persona_service.configure_redis(app.state.redis)
     chat_service.configure_redis(app.state.redis)
 
+    # Bootstrap embeddings for static knowledge bases (fire-and-forget).
+    # Runs once per cold start; idempotent — skips rows that already have embeddings.
+    # Errors are silenced so a failed embedding pass never blocks API startup.
+    import asyncio as _asyncio
+    from app.database import AsyncSessionLocal as _AsyncSessionLocal
+    from app.services.clinical_kb_service import (
+        embed_all_pending as _embed_kb,
+        embed_pending_chapters as _embed_chapters,
+    )
+
+    async def _bootstrap_embeddings() -> None:
+        try:
+            async with _AsyncSessionLocal() as _db:
+                await _embed_kb(_db)
+                await _embed_chapters(_db)
+        except Exception as _exc:
+            logger.warning("Embedding bootstrap failed (non-fatal): %s", _exc)
+
+    _asyncio.create_task(_bootstrap_embeddings())
+
     yield
 
     # Teardown — closes idle connections (called on Lambda container shutdown)

@@ -61,6 +61,7 @@ Example usage (streaming)
     tokens_used = usage[0] if usage else None
 """
 import logging
+import time
 from typing import AsyncGenerator, Optional
 
 from anthropic import AsyncAnthropic
@@ -69,6 +70,64 @@ from openai import AsyncOpenAI
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ── Circuit breaker (chat-only) ────────────────────────────────────────────────
+#
+# Protects the main chat path against transient Anthropic outages. State is
+# module-level (in-process): a single Lambda instance tracks its own recent
+# failures; we explicitly do NOT push this to Redis because:
+#   1. Redis adds latency to every chat call (the hot path).
+#   2. Each Lambda container observes its own connectivity to Anthropic;
+#      a per-instance breaker is the right granularity.
+#   3. Concurrency=2 keeps the blast radius small even if one instance
+#      stays "open" longer than another.
+#
+# Behaviour:
+#   - Records timestamps of recent failures in a sliding window of
+#     _CB_WINDOW_SECONDS.
+#   - When _CB_FAILURE_THRESHOLD failures are observed inside that window,
+#     the breaker opens for _CB_RESET_SECONDS — primary calls are skipped
+#     and the fallback provider is used directly.
+#   - Crisis and insight providers are NOT routed through the breaker:
+#     crisis responses must never silently degrade to a lesser model, and
+#     insights are background tasks that should fail loudly.
+
+_CB_FAILURE_THRESHOLD = 3
+_CB_RESET_SECONDS = 120
+_CB_WINDOW_SECONDS = 60
+_cb_failures: list[float] = []  # timestamps of recent failures
+_cb_open_until: float = 0.0
+
+
+def _cb_record_failure() -> None:
+    """Record a primary-provider failure and possibly trip the breaker."""
+    global _cb_open_until
+    now = time.monotonic()
+    # Evict timestamps older than the window
+    cutoff = now - _CB_WINDOW_SECONDS
+    while _cb_failures and _cb_failures[0] < cutoff:
+        _cb_failures.pop(0)
+    _cb_failures.append(now)
+    if len(_cb_failures) >= _CB_FAILURE_THRESHOLD and _cb_open_until <= now:
+        _cb_open_until = now + _CB_RESET_SECONDS
+        logger.warning(
+            "LLM circuit breaker OPEN: %d failures in %ds — falling back for %ds",
+            len(_cb_failures), _CB_WINDOW_SECONDS, _CB_RESET_SECONDS,
+        )
+
+
+def _cb_is_open() -> bool:
+    """Return True if the breaker is currently open (skip primary)."""
+    global _cb_open_until
+    now = time.monotonic()
+    if _cb_open_until > now:
+        return True
+    if _cb_open_until and _cb_open_until <= now:
+        # Reset window after cooldown
+        _cb_open_until = 0.0
+        _cb_failures.clear()
+        logger.info("LLM circuit breaker CLOSED — resuming primary provider")
+    return False
 
 # Chat streaming: respostas terapêuticas podem ser densas (acolhimento + orientação).
 _CHAT_STREAM_MAX_TOKENS = 2000
@@ -323,12 +382,128 @@ class AnthropicProvider(LLMProvider):
                 usage_out.append(None)
 
 
+# ── Fallback provider with circuit breaker ────────────────────────────────────
+
+class FallbackProvider(LLMProvider):
+    """
+    Wraps a primary provider and a fallback provider behind a circuit breaker.
+
+    Behaviour
+    ---------
+    - If the breaker is open, the primary is skipped and the fallback runs
+      immediately.
+    - Otherwise the primary is attempted. On exception, the failure is recorded
+      and the fallback is invoked transparently.
+    - Streaming: if the primary fails BEFORE yielding any chunk, the fallback
+      stream is used. If it fails MID-stream, the partial text already sent to
+      the client cannot be retracted; we re-raise so the caller's outer try
+      block surfaces the error to the user (consistent with current SSE
+      protocol). This keeps user-visible behaviour predictable.
+    """
+
+    def __init__(self, primary: LLMProvider, fallback: LLMProvider) -> None:
+        self._primary = primary
+        self._fallback = fallback
+
+    async def complete(
+        self,
+        system: str,
+        messages: list[dict],
+        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        *,
+        dynamic_system: str = "",
+    ) -> tuple[str, Optional[int]]:
+        if _cb_is_open():
+            logger.info("Circuit breaker open — using fallback provider for complete()")
+            return await self._fallback.complete(
+                system, messages, max_tokens, dynamic_system=dynamic_system
+            )
+        try:
+            return await self._primary.complete(
+                system, messages, max_tokens, dynamic_system=dynamic_system
+            )
+        except Exception as exc:
+            _cb_record_failure()
+            logger.warning(
+                "Primary LLM failed in complete(); falling back: %s", exc
+            )
+            return await self._fallback.complete(
+                system, messages, max_tokens, dynamic_system=dynamic_system
+            )
+
+    async def stream(
+        self,
+        system: str,
+        messages: list[dict],
+        usage_out: list,
+        *,
+        dynamic_system: str = "",
+    ) -> AsyncGenerator[str, None]:
+        if _cb_is_open():
+            logger.info("Circuit breaker open — using fallback provider for stream()")
+            async for chunk in self._fallback.stream(
+                system, messages, usage_out, dynamic_system=dynamic_system
+            ):
+                yield chunk
+            return
+
+        # We must detect failure BEFORE the first chunk to fall back transparently.
+        # Once any byte has been yielded to the SSE consumer, mid-stream switching
+        # would corrupt the user-visible reply, so we re-raise instead.
+        primary_iter = self._primary.stream(
+            system, messages, usage_out, dynamic_system=dynamic_system
+        )
+        first_chunk: Optional[str] = None
+        try:
+            first_chunk = await primary_iter.__anext__()
+        except StopAsyncIteration:
+            # Primary returned no chunks at all — treat as success (empty reply).
+            return
+        except Exception as exc:
+            _cb_record_failure()
+            logger.warning(
+                "Primary LLM failed before first chunk in stream(); falling back: %s",
+                exc,
+            )
+            async for chunk in self._fallback.stream(
+                system, messages, usage_out, dynamic_system=dynamic_system
+            ):
+                yield chunk
+            return
+
+        # First chunk received from primary — commit to it.
+        yield first_chunk
+        try:
+            async for chunk in primary_iter:
+                yield chunk
+        except Exception as exc:
+            # Mid-stream failure: record it, but re-raise — the outer SSE
+            # handler in chat_service emits an "error" frame to the client.
+            _cb_record_failure()
+            logger.error(
+                "Primary LLM failed mid-stream; cannot fall back transparently: %s",
+                exc,
+            )
+            raise
+
+
 # ── Factories ──────────────────────────────────────────────────────────────────
 
 def get_chat_provider() -> LLMProvider:
-    """Return the provider for main chat sessions (Claude Haiku, no thinking)."""
-    cfg = settings.anthropic_config
-    return AnthropicProvider(api_key=cfg["api_key"], model=cfg["chat_model"])
+    """
+    Return the chat provider with circuit breaker.
+
+    Primary: Anthropic Claude Haiku (high empathy, prompt caching).
+    Fallback: OpenAI gpt-4.1-mini (used when Anthropic is unavailable).
+
+    The breaker trips after 3 consecutive failures within 60s and resets
+    after 120s. See module-level circuit-breaker docs.
+    """
+    a_cfg = settings.anthropic_config
+    o_cfg = settings.openai_config
+    primary = AnthropicProvider(api_key=a_cfg["api_key"], model=a_cfg["chat_model"])
+    fallback = OpenAIProvider(api_key=o_cfg["api_key"], model="gpt-4.1-mini")
+    return FallbackProvider(primary=primary, fallback=fallback)
 
 
 def get_crisis_chat_provider() -> LLMProvider:

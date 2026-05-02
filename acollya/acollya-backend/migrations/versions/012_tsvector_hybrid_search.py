@@ -25,6 +25,7 @@ Revision ID: 012
 Revises: 011
 """
 from alembic import op
+from sqlalchemy import text
 
 revision = "012"
 down_revision = "011"
@@ -33,38 +34,31 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # chat_messages: generated tsvector on content
-    op.execute(
-        """
-        ALTER TABLE chat_messages
-        ADD COLUMN ts_content tsvector
-        GENERATED ALWAYS AS (to_tsvector('portuguese', content)) STORED
-        """
-    )
-    op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_messages_ts_content "
-        "ON chat_messages USING gin(ts_content)"
-    )
-
-    # journal_entries: generated tsvector on title + content
-    op.execute(
-        """
-        ALTER TABLE journal_entries
-        ADD COLUMN ts_content tsvector
-        GENERATED ALWAYS AS (
-            to_tsvector('portuguese', coalesce(title, '') || ' ' || content)
-        ) STORED
-        """
-    )
-    op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_journal_entries_ts_content "
-        "ON journal_entries USING gin(ts_content)"
-    )
+    # ADD COLUMN runs in normal transaction; CREATE INDEX CONCURRENTLY needs autocommit.
+    op.execute(text(
+        "ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS ts_content tsvector "
+        "GENERATED ALWAYS AS (to_tsvector('portuguese', content)) STORED"
+    ))
+    op.execute(text(
+        "ALTER TABLE journal_entries ADD COLUMN IF NOT EXISTS ts_content tsvector "
+        "GENERATED ALWAYS AS ("
+        "to_tsvector('portuguese', coalesce(title, '') || ' ' || content)"
+        ") STORED"
+    ))
+    with op.get_context().autocommit_block():
+        op.execute(text(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_messages_ts_content "
+            "ON chat_messages USING gin(ts_content)"
+        ))
+        op.execute(text(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_journal_entries_ts_content "
+            "ON journal_entries USING gin(ts_content)"
+        ))
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_journal_entries_ts_content")
-    op.execute("ALTER TABLE journal_entries DROP COLUMN IF EXISTS ts_content")
-
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_chat_messages_ts_content")
-    op.execute("ALTER TABLE chat_messages DROP COLUMN IF EXISTS ts_content")
+    with op.get_context().autocommit_block():
+        op.execute(text("DROP INDEX CONCURRENTLY IF EXISTS idx_journal_entries_ts_content"))
+        op.execute(text("DROP INDEX CONCURRENTLY IF EXISTS idx_chat_messages_ts_content"))
+    op.execute(text("ALTER TABLE journal_entries DROP COLUMN IF EXISTS ts_content"))
+    op.execute(text("ALTER TABLE chat_messages DROP COLUMN IF EXISTS ts_content"))

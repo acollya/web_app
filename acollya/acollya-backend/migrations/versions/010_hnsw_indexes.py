@@ -13,6 +13,7 @@ Revision ID: 010
 Revises: 009
 """
 from alembic import op
+from sqlalchemy import text
 
 revision = "010"
 down_revision = "009"
@@ -42,38 +43,27 @@ _NEW_INDEX_NAMES = {
 
 
 def upgrade() -> None:
-    for table in _TABLES:
-        old_idx = _OLD_INDEX_NAMES[table]
-        new_idx = _NEW_INDEX_NAMES[table]
-
-        # Drop the IVFFlat index
-        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {old_idx}")
-
-        # Create HNSW index
-        # m=16: max connections per layer (balance recall vs memory)
-        # ef_construction=64: beam width during build (higher = better recall, slower build)
-        op.execute(
-            f"""
-            CREATE INDEX CONCURRENTLY {new_idx}
-            ON {table}
-            USING hnsw (embedding vector_cosine_ops)
-            WITH (m = 16, ef_construction = 64)
-            """
-        )
+    # CONCURRENTLY operations cannot run inside a transaction block.
+    with op.get_context().autocommit_block():
+        for table in _TABLES:
+            old_idx = _OLD_INDEX_NAMES[table]
+            new_idx = _NEW_INDEX_NAMES[table]
+            op.execute(text(f"DROP INDEX CONCURRENTLY IF EXISTS {old_idx}"))
+            op.execute(text(
+                f"CREATE INDEX CONCURRENTLY {new_idx} "
+                f"ON {table} USING hnsw (embedding vector_cosine_ops) "
+                f"WITH (m = 16, ef_construction = 64)"
+            ))
 
 
 def downgrade() -> None:
-    for table in _TABLES:
-        old_idx = _OLD_INDEX_NAMES[table]
-        new_idx = _NEW_INDEX_NAMES[table]
-
-        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {new_idx}")
-
-        op.execute(
-            f"""
-            CREATE INDEX CONCURRENTLY {old_idx}
-            ON {table}
-            USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 50)
-            """
-        )
+    with op.get_context().autocommit_block():
+        for table in _TABLES:
+            old_idx = _OLD_INDEX_NAMES[table]
+            new_idx = _NEW_INDEX_NAMES[table]
+            op.execute(text(f"DROP INDEX CONCURRENTLY IF EXISTS {new_idx}"))
+            op.execute(text(
+                f"CREATE INDEX CONCURRENTLY {old_idx} "
+                f"ON {table} USING ivfflat (embedding vector_cosine_ops) "
+                f"WITH (lists = 50)"
+            ))

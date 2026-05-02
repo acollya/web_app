@@ -20,6 +20,7 @@ Revision ID: 011
 Revises: 010
 """
 from alembic import op
+from sqlalchemy import text
 
 revision = "011"
 down_revision = "010"
@@ -28,38 +29,33 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # chat_messages: user history pagination (DESC) + in-session loading (ASC)
-    op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_messages_user_created "
-        "ON chat_messages (user_id, created_at DESC)"
-    )
-    op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_messages_session_created "
-        "ON chat_messages (session_id, created_at ASC)"
-    )
-
-    # journal_entries: paginated journal list per user
-    op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_journal_entries_user_created "
-        "ON journal_entries (user_id, created_at DESC)"
-    )
-
-    # mood_checkins: paginated mood history per user
-    op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mood_checkins_user_created "
-        "ON mood_checkins (user_id, created_at DESC)"
-    )
-
-    # user_persona_facts: dedup search filters by (user_id, category) before vector scan
-    op.execute(
-        "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_user_persona_facts_user_category "
-        "ON user_persona_facts (user_id, category)"
-    )
+    with op.get_context().autocommit_block():
+        op.execute(text(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_messages_user_created "
+            "ON chat_messages (user_id, created_at DESC)"
+        ))
+        op.execute(text(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chat_messages_session_created "
+            "ON chat_messages (session_id, created_at ASC)"
+        ))
+        op.execute(text(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_journal_entries_user_created "
+            "ON journal_entries (user_id, created_at DESC)"
+        ))
+        op.execute(text(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_mood_checkins_user_created "
+            "ON mood_checkins (user_id, created_at DESC)"
+        ))
+        op.execute(text(
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_user_persona_facts_user_category "
+            "ON user_persona_facts (user_id, category)"
+        ))
 
 
 def downgrade() -> None:
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_chat_messages_user_created")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_chat_messages_session_created")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_journal_entries_user_created")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_mood_checkins_user_created")
-    op.execute("DROP INDEX CONCURRENTLY IF EXISTS idx_user_persona_facts_user_category")
+    with op.get_context().autocommit_block():
+        op.execute(text("DROP INDEX CONCURRENTLY IF EXISTS idx_chat_messages_user_created"))
+        op.execute(text("DROP INDEX CONCURRENTLY IF EXISTS idx_chat_messages_session_created"))
+        op.execute(text("DROP INDEX CONCURRENTLY IF EXISTS idx_journal_entries_user_created"))
+        op.execute(text("DROP INDEX CONCURRENTLY IF EXISTS idx_mood_checkins_user_created"))
+        op.execute(text("DROP INDEX CONCURRENTLY IF EXISTS idx_user_persona_facts_user_category"))
