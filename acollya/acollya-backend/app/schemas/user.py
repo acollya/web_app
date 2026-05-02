@@ -1,14 +1,18 @@
 """
 Pydantic v2 schemas for user endpoints.
 
-UserResponse  — GET /users/me
-UserUpdate    — PATCH /users/me (all fields optional)
+UserResponse           — GET /users/me
+UserUpdate             — PATCH /users/me (all fields optional)
+PasswordChangeRequest  — PATCH /users/me/password
+SessionResponse        — single active refresh-token session
+SessionListResponse    — GET /users/me/sessions
 """
+import re
 import uuid
 from datetime import date, datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class UserResponse(BaseModel):
@@ -38,3 +42,34 @@ class UserUpdate(BaseModel):
     gender: Optional[str] = Field(None, max_length=30)
     push_token_fcm: Optional[str] = None
     push_token_apns: Optional[str] = None
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if not re.search(r"[A-Z]", v):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not re.search(r"[0-9]", v):
+            raise ValueError("Password must contain at least one digit")
+        return v
+
+
+class SessionResponse(BaseModel):
+    jti: str
+    created_at: Optional[datetime] = Field(
+        default=None,
+        description="Approximate session creation time (derived from refresh-token TTL).",
+    )
+    expires_at: Optional[datetime] = Field(
+        default=None,
+        description="Approximate refresh-token expiration time.",
+    )
+
+
+class SessionListResponse(BaseModel):
+    sessions: list[SessionResponse]
+    total: int

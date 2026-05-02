@@ -2,9 +2,10 @@
 User service — business logic for /users/me endpoints.
 
 Operations:
-  get_me(user)                    -> UserResponse (thin wrapper, no DB query needed)
-  update_me(db, user, data)       -> UserResponse
-  delete_me(db, user, redis)      -> None  (LGPD right-to-erasure)
+  get_me(user)                              -> UserResponse (thin wrapper, no DB query needed)
+  update_me(db, user, data)                 -> UserResponse
+  change_password(db, redis, user, data)    -> UserResponse
+  delete_me(db, user, redis)                -> None  (LGPD right-to-erasure)
 
 LGPD deletion strategy:
   Rather than a hard DELETE (which would cascade and lose analytics data),
@@ -38,10 +39,13 @@ from redis.asyncio import Redis
 from sqlalchemy import delete as sql_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import hash_password, verify_password
+from app.core.exceptions import AuthenticationError, ValidationError
 from app.models.user import User
 from app.models.user_persona_fact import UserPersonaFact
 from app.models.user_session import UserSession
-from app.schemas.user import UserResponse, UserUpdate
+from app.schemas.user import PasswordChangeRequest, UserResponse, UserUpdate
+from app.services import auth_service
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +61,49 @@ async def update_me(db: AsyncSession, user: User, data: UserUpdate) -> UserRespo
 
     await db.commit()
     await db.refresh(user)
+    return UserResponse.model_validate(user)
+
+
+async def change_password(
+    db: AsyncSession,
+    redis: Redis,
+    user: User,
+    data: PasswordChangeRequest,
+) -> UserResponse:
+    """
+    Change the authenticated user's password and revoke every active session.
+
+    Rules:
+      1. SSO-only accounts (no password_hash) cannot use this endpoint.
+      2. The current password must verify (constant-time bcrypt check).
+      3. The new password may not be identical to the current one.
+      4. On success, ALL refresh tokens are revoked — the client that just
+         changed the password will need to log in again. This is intentional:
+         "change password" implies "kick every session out".
+
+    The access token used to authenticate this very request is NOT revoked
+    (access tokens are stateless and short-lived: max 15 minutes). It will
+    expire naturally and the client will be unable to refresh it.
+    """
+    if not user.password_hash:
+        raise ValidationError(
+            "This account uses single sign-on (Google or Apple) and has no password. "
+            "Set a password by signing in via your SSO provider's account settings."
+        )
+
+    if not verify_password(data.current_password, user.password_hash):
+        raise AuthenticationError("Current password is incorrect")
+
+    if data.new_password == data.current_password:
+        raise ValidationError("New password must be different from the current password")
+
+    user.password_hash = hash_password(data.new_password)
+    await db.commit()
+    await db.refresh(user)
+
+    revoked = await auth_service.revoke_all_sessions(redis, str(user.id))
+    logger.info("User %s changed password — revoked %d session(s)", user.id, revoked)
+
     return UserResponse.model_validate(user)
 
 
@@ -127,36 +174,44 @@ async def delete_me(
 
 async def _revoke_user_refresh_tokens(redis: Redis, user_id: str) -> None:
     """
-    Scan Redis for all refresh_jti:* keys belonging to user_id and delete them.
+    Revoke every active refresh-token session for user_id.
 
-    Uses SCAN (non-blocking, cursor-based) to avoid KEYS blocking the server.
-    Errors are caught and logged — token revocation must never fail the deletion
-    request because the DB transaction has already committed.
+    Primary path uses the `user_sessions:{user_id}` secondary index (O(1)).
+    A SCAN fallback is kept for backward compatibility with any pre-index
+    jtis still floating around Redis (covers in-flight tokens issued before
+    the index was deployed).
 
-    Key format: refresh_jti:{jti}  →  value: user_id (str)
+    Errors are caught and logged — token revocation must never fail the
+    deletion request because the DB transaction has already committed.
     """
     try:
-        keys_to_delete: list[str] = []
-        cursor: int = 0
+        revoked = await auth_service.revoke_all_sessions(redis, user_id)
+        logger.info(
+            "Revoked %d refresh-token session(s) for deleted user %s (via index)",
+            revoked,
+            user_id,
+        )
 
+        # Fallback: SCAN for orphan keys not present in the index
+        # (legacy data written before the secondary index existed).
+        orphans: list[str] = []
+        cursor: int = 0
         while True:
             cursor, keys = await redis.scan(cursor, match="refresh_jti:*", count=100)
             for key in keys:
                 value = await redis.get(key)
                 if value == user_id:
-                    keys_to_delete.append(key)
+                    orphans.append(key)
             if int(cursor) == 0:
                 break
 
-        if keys_to_delete:
-            await redis.delete(*keys_to_delete)
+        if orphans:
+            await redis.delete(*orphans)
             logger.info(
-                "Revoked %d refresh token(s) for deleted user %s",
-                len(keys_to_delete),
+                "Revoked %d orphan refresh token(s) for deleted user %s (via SCAN)",
+                len(orphans),
                 user_id,
             )
-        else:
-            logger.debug("No active refresh tokens found in Redis for user %s", user_id)
 
     except Exception as exc:  # noqa: BLE001
         # Non-fatal: tokens will naturally expire within 30 days.

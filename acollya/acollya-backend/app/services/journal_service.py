@@ -42,7 +42,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AuthorizationError, NotFoundError
-from app.core.llm_provider import get_insight_provider, _INSIGHT_MAX_TOKENS
+from app.core.llm_provider import get_chat_provider, get_insight_provider, _INSIGHT_MAX_TOKENS
 from app.database import AsyncSessionLocal
 from app.models.journal_entry import JournalEntry
 from app.models.mood_checkin import MoodCheckin
@@ -380,3 +380,74 @@ async def generate_reflection(
 
     await _run_reflection(db, user, entry)
     return JournalEntryResponse.model_validate(entry)
+
+
+# ── Journal prompt suggestions ─────────────────────────────────────────────────
+
+_PROMPT_SUGGESTION_SYSTEM = """\
+Você é um assistente especializado em diário terapêutico e autoconhecimento.
+Seu papel é sugerir perguntas reflexivas para diário pessoal em Português Brasileiro.
+As perguntas devem ser abertas, empáticas e adequadas para o contexto emocional do usuário.
+Retorne APENAS as perguntas, uma por linha, sem numeração, sem marcadores, sem texto adicional.
+Gere exatamente 4 perguntas."""
+
+_FALLBACK_PROMPTS = [
+    "O que te trouxe alegria hoje e por quê isso foi significativo para você?",
+    "Que emoção esteve mais presente em você ultimamente? De onde ela vem?",
+    "O que você gostaria de deixar para trás desta semana?",
+    "Qual pequeno passo você pode dar amanhã para se sentir melhor?",
+]
+
+
+async def suggest_prompts(db: AsyncSession, user: User) -> list[str]:
+    """Generate 3-5 personalized journal prompts using Haiku + persona context."""
+    try:
+        persona_context = await get_persona_context(db, user)
+
+        mood_result = await db.execute(
+            select(MoodCheckin)
+            .where(MoodCheckin.user_id == user.id)
+            .order_by(MoodCheckin.created_at.desc())
+            .limit(3)
+        )
+        recent_checkins: list[MoodCheckin] = list(mood_result.scalars().all())
+
+        if persona_context:
+            persona_facts_formatted = persona_context
+        else:
+            persona_facts_formatted = "Nenhum contexto de perfil disponível ainda."
+
+        if recent_checkins:
+            mood_lines = []
+            for checkin in recent_checkins:
+                line = f"- {checkin.mood} (intensidade {checkin.intensity}/5)"
+                if checkin.note:
+                    line += f": {checkin.note[:80]}"
+                mood_lines.append(line)
+            recent_mood_summary = "\n".join(mood_lines)
+        else:
+            recent_mood_summary = "Nenhum check-in de humor recente disponível."
+
+        user_message = (
+            f"Contexto do usuário:\n{persona_facts_formatted}\n\n"
+            f"Humor recente:\n{recent_mood_summary}\n\n"
+            "Gere 4 perguntas reflexivas para o diário pessoal desta pessoa."
+        )
+
+        provider = get_chat_provider()
+        content, _ = await provider.complete(
+            system=_PROMPT_SUGGESTION_SYSTEM,
+            messages=[{"role": "user", "content": user_message}],
+            max_tokens=300,
+        )
+
+        prompts = [line.strip() for line in content.splitlines() if line.strip()]
+        prompts = prompts[:5]
+        if len(prompts) < 3:
+            return list(_FALLBACK_PROMPTS)
+
+        return prompts
+
+    except Exception as exc:
+        logger.warning("suggest_prompts failed (returning fallback): user=%s error=%s", user.id, exc)
+        return list(_FALLBACK_PROMPTS)

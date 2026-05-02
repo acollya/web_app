@@ -80,6 +80,9 @@ class Settings(BaseSettings):
     free_chat_messages_per_day: int = 20
     premium_chat_messages_per_day: int = 9999
 
+    # ── RevenueCat (IAP webhook) ──────────────────────────────────────────────
+    revenue_cat_webhook_secret: str = ""
+
     # ── CORS ──────────────────────────────────────────────────────────────────
     @property
     def cors_origins(self) -> list[str]:

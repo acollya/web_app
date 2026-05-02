@@ -12,15 +12,18 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user, get_db, require_premium
+from app.core.dependencies import get_current_user, get_db, get_redis, require_premium
+from app.core.rate_limiter import RateLimiter
 from app.models.user import User
 from app.schemas.journal import (
     JournalEntryCreate,
     JournalEntryResponse,
     JournalEntryUpdate,
     JournalListResponse,
+    JournalPromptSuggestionsResponse,
 )
 from app.services import journal_service
 from app.services.persona_service import bg_extract_and_upsert_facts
@@ -63,6 +66,26 @@ async def list_entries(
     page_size: int = Query(20, ge=1, le=100),
 ) -> JournalListResponse:
     return await journal_service.list_entries(db, current_user, page, page_size)
+
+
+@router.get(
+    "/suggest-prompt",
+    response_model=JournalPromptSuggestionsResponse,
+    summary="Get personalized journal prompt suggestions",
+)
+async def suggest_journal_prompts(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> JournalPromptSuggestionsResponse:
+    await RateLimiter(redis).check_and_increment(
+        user_id=str(current_user.id),
+        action="journal_suggest_prompt",
+        limit=10,
+        window_seconds=3600,
+    )
+    prompts = await journal_service.suggest_prompts(db, current_user)
+    return JournalPromptSuggestionsResponse(prompts=prompts)
 
 
 @router.get(

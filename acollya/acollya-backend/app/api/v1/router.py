@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     chat,
     persona,
     media,
+    webhooks,
 )
 
 api_router = APIRouter()
@@ -48,3 +49,6 @@ api_router.include_router(persona.router,        prefix="/persona",       tags=[
 
 # ── Phase 3 — Media (áudio, transcrição) ──────────────────────────────────────
 api_router.include_router(media.router,          prefix="/media",         tags=["media"])
+
+# ── Webhooks (provider-authenticated — no Bearer token) ──────────────────────
+api_router.include_router(webhooks.router,       prefix="/webhooks",      tags=["webhooks"])

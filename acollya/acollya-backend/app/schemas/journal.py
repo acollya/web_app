@@ -52,3 +52,7 @@ class JournalListResponse(BaseModel):
     page: int
     page_size: int
     has_more: bool
+
+
+class JournalPromptSuggestionsResponse(BaseModel):
+    prompts: list[str]

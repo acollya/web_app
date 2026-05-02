@@ -9,13 +9,19 @@ Flows:
   google_auth(db, redis, req) -> TokenResponse
 
 Redis key convention for refresh token JTIs:
-  Key:  refresh_jti:{jti}
-  Value: user_id (str)
-  TTL:  refresh_token_expire_days * 86400
+  Key:  refresh_jti:{jti}            -> value: user_id (str), TTL: 30 days
+  Key:  user_sessions:{user_id}      -> SET of jti, TTL synced to longest jti
+
+Secondary index rationale:
+  The `user_sessions:{user_id}` SET is a reverse lookup so we can list / revoke
+  every active refresh token for a user in O(1) without SCAN. Membership in
+  this set is also the ownership check used by DELETE /users/me/sessions/{jti}
+  — a user can only revoke a jti present in *their* set.
 
 Rotation strategy:
-  On refresh:  delete old jti, issue new access + refresh pair, store new jti.
-  On logout:   delete jti — token is immediately revoked.
+  On refresh:  delete old jti (and SREM from set), issue new access + refresh
+               pair, store new jti (and SADD to set).
+  On logout:   delete jti and SREM from set — token is immediately revoked.
   Consequence: stolen refresh tokens are mitigated because the legitimate user's
                next refresh will rotate, invalidating the stolen token.
 """
@@ -49,10 +55,15 @@ from app.schemas.user import UserResponse
 logger = logging.getLogger(__name__)
 
 _JTI_PREFIX = "refresh_jti"
+_USER_SESSIONS_PREFIX = "user_sessions"
 
 
 def _jti_key(jti: str) -> str:
     return f"{_JTI_PREFIX}:{jti}"
+
+
+def _user_sessions_key(user_id: str) -> str:
+    return f"{_USER_SESSIONS_PREFIX}:{user_id}"
 
 
 def _token_ttl() -> int:
@@ -64,7 +75,22 @@ def _access_ttl() -> int:
 
 
 async def _store_jti(redis: Redis, jti: str, user_id: str) -> None:
-    await redis.setex(_jti_key(jti), _token_ttl(), str(user_id))
+    """
+    Persist the jti -> user_id mapping AND register the jti in the user's
+    session set so we can list/revoke without SCAN.
+
+    Both keys share the same TTL. EXPIREAT on the set is bumped to the latest
+    jti's expiration so the set lives at least as long as its newest member.
+    """
+    user_id = str(user_id)
+    ttl = _token_ttl()
+    sessions_key = _user_sessions_key(user_id)
+
+    pipe = redis.pipeline()
+    pipe.setex(_jti_key(jti), ttl, user_id)
+    pipe.sadd(sessions_key, jti)
+    pipe.expire(sessions_key, ttl)
+    await pipe.execute()
 
 
 async def _validate_jti(redis: Redis, jti: str) -> str:
@@ -75,8 +101,107 @@ async def _validate_jti(redis: Redis, jti: str) -> str:
     return user_id
 
 
-async def _revoke_jti(redis: Redis, jti: str) -> None:
-    await redis.delete(_jti_key(jti))
+async def _revoke_jti(redis: Redis, jti: str, user_id: str | None = None) -> None:
+    """
+    Delete the jti key and remove it from the user's session set.
+
+    user_id is optional — if not provided we read it from the jti key first
+    (so the secondary index stays consistent even when the caller doesn't
+    know the owner).
+    """
+    if user_id is None:
+        user_id = await redis.get(_jti_key(jti))
+
+    pipe = redis.pipeline()
+    pipe.delete(_jti_key(jti))
+    if user_id:
+        pipe.srem(_user_sessions_key(str(user_id)), jti)
+    await pipe.execute()
+
+
+# ── Session management (used by /users/me/sessions endpoints) ─────────────────
+
+async def list_sessions(redis: Redis, user_id: str) -> list[dict]:
+    """
+    Return every active refresh-token session for user_id.
+
+    For each jti we read its TTL to derive an approximate created_at /
+    expires_at (the actual JWT iat/exp aren't stored separately to keep the
+    key compact; the TTL gives us a usable approximation for UX).
+
+    Stale entries (jti present in the set but key already expired) are pruned
+    from the set on the fly so the index self-heals.
+    """
+    sessions_key = _user_sessions_key(str(user_id))
+    members = await redis.smembers(sessions_key)
+    if not members:
+        return []
+
+    ttl_max = _token_ttl()
+    now = datetime.now(UTC)
+    stale: list[str] = []
+    sessions: list[dict] = []
+
+    for raw in members:
+        jti = raw.decode() if isinstance(raw, bytes) else raw
+        ttl = await redis.ttl(_jti_key(jti))
+        if ttl is None or ttl < 0:
+            stale.append(jti)
+            continue
+
+        expires_at = now + timedelta(seconds=ttl)
+        created_at = expires_at - timedelta(seconds=ttl_max)
+        sessions.append({"jti": jti, "created_at": created_at, "expires_at": expires_at})
+
+    if stale:
+        await redis.srem(sessions_key, *stale)
+
+    sessions.sort(key=lambda s: s["created_at"], reverse=True)
+    return sessions
+
+
+async def revoke_session(redis: Redis, user_id: str, jti: str) -> bool:
+    """
+    Revoke a single session — only if it belongs to user_id.
+
+    Ownership is verified via SET membership (`user_sessions:{user_id}`):
+    a user can never revoke another user's jti. Returns True if the jti was
+    found and revoked, False otherwise (idempotent — caller treats both as 200).
+    """
+    sessions_key = _user_sessions_key(str(user_id))
+    is_member = await redis.sismember(sessions_key, jti)
+    if not is_member:
+        return False
+
+    pipe = redis.pipeline()
+    pipe.delete(_jti_key(jti))
+    pipe.srem(sessions_key, jti)
+    await pipe.execute()
+    return True
+
+
+async def revoke_all_sessions(redis: Redis, user_id: str) -> int:
+    """
+    Revoke every active refresh-token session for user_id.
+
+    Used on password change and on LGPD account deletion. Returns the number
+    of sessions invalidated.
+    """
+    sessions_key = _user_sessions_key(str(user_id))
+    members = await redis.smembers(sessions_key)
+    if not members:
+        return 0
+
+    jtis = [m.decode() if isinstance(m, bytes) else m for m in members]
+
+    pipe = redis.pipeline()
+    for jti in jtis:
+        pipe.delete(_jti_key(jti))
+    pipe.delete(sessions_key)
+    await pipe.execute()
+
+    logger.info("Revoked %d session(s) for user %s", len(jtis), user_id)
+    return len(jtis)
 
 
 def _build_token_response(
@@ -164,11 +289,11 @@ async def refresh_tokens(
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user: User | None = result.scalar_one_or_none()
     if not user or not user.is_active:
-        await _revoke_jti(redis, jti)
+        await _revoke_jti(redis, jti, user_id)
         raise AuthenticationError("User not found or deactivated")
 
     # Rotate: revoke old jti, issue new pair
-    await _revoke_jti(redis, jti)
+    await _revoke_jti(redis, jti, str(user.id))
     new_access = create_access_token(str(user.id))
     new_refresh, new_jti = create_refresh_token(str(user.id))
     await _store_jti(redis, new_jti, str(user.id))
