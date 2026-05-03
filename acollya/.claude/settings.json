@@ -54,10 +54,23 @@
       "Bash(python -c ' *)",
       "Bash(npx tsc *)",
       "Read(//Users/kadu/Documents/VsCode/Acollya_Web/**)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/kadu/Documents/VsCode/Acollya_Web/web_app/acollya/acollya-infra/stacks/api_stack.py'\\).read\\(\\)\\); print\\('OK: syntax valid'\\)\")",
+      "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); print\\(json.dumps\\({**p.get\\('dependencies',{}\\), **p.get\\('devDependencies',{}\\)}, indent=2\\)\\)\")",
+      "Bash(python -c \"import ast, sys; ast.parse\\(open\\('app/api/v1/endpoints/media.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(npx --prefix /Users/kadu/Documents/VsCode/Acollya_Web/web_app/acollya/acollya-mobile expo install --list)",
+      "Bash(python -m alembic current)",
+      "Read(//opt/**)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/acollya-backend/bin/alembic current *)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/acollya-backend/bin/alembic upgrade *)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/acollya-backend/bin/alembic --version)",
+      "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/acollya-backend/bin/python -c \"import sqlalchemy; print\\(sqlalchemy.__version__\\)\")",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); deps={**d.get\\('dependencies',{}\\), **d.get\\('devDependencies',{}\\)}; [print\\(k,v\\) for k,v in sorted\\(deps.items\\(\\)\\) if any\\(x in k for x in ['expo','reanimated','react-native','haptic','blur','navigation','tanstack','zustand']\\)]\")"
     ],
     "additionalDirectories": [
-      "/Users/kadu/.claude/projects/-Users-kadu-Documents-VsCode-Acollya-Web-web-app-acollya/memory"
+      "/Users/kadu/.claude/projects/-Users-kadu-Documents-VsCode-Acollya-Web-web-app-acollya/memory",
+      "/Users/kadu/Documents/VsCode/Acollya_Web/web_app/Sem Título"
     ]
   }
 }
