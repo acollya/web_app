@@ -166,6 +166,50 @@ Os subagentes abaixo estão instalados em `.claude/agents/` e devem ser acionado
 - Antes de qualquer integração com parceiros externos
 - Ao atualizar schemas Pydantic que fazem parte da API pública
 
+### Visão de Negócio & Produto
+
+**Acionar `ux-researcher` quando:**
+- Antes de criar ou redesenhar qualquer tela ou fluxo que afete experiência do usuário
+- Ao definir ou revisar o fluxo de onboarding (qualquer tela em `acollya-mobile/src/screens/auth/`)
+- Ao discutir personas, segmentos de usuário ou proposta de valor para um público específico
+- Antes de qualquer decisão de UX que impacte fluxos core (chat, check-in de humor, diário)
+- Ao planejar pesquisa para validar hipóteses sobre comportamento ou preferências dos usuários
+
+**Acionar `legal-advisor` quando:**
+- Modificar Termos de Uso, Política de Privacidade ou qualquer documento legal do app
+- Adicionar novos campos de coleta de dados no modelo de usuário (`acollya-backend/app/models/`)
+- Implementar ou alterar fluxos de consentimento LGPD ou deleção de conta
+- Integrar novos serviços terceiros que processem dados pessoais dos usuários
+- Qualquer mudança na lógica de retenção, exportação ou exclusão de dados
+
+**Acionar `product-manager` quando:**
+- Definir novas features ou avaliar requests de funcionalidade para o roadmap
+- Priorizar itens no backlog ou decidir o que entra em um sprint
+- Avaliar estratégia de lançamento, go-to-market ou posicionamento competitivo
+- Definir métricas de sucesso (KPIs, OKRs) para novas funcionalidades ou releases
+- Fazer tradeoffs entre valor para o usuário e complexidade técnica de implementação
+
+**Acionar `customer-success-manager` quando:**
+- Projetar ou revisar o fluxo de onboarding in-app e estratégia de ativação de usuários
+- Trabalhar em estratégias de push notifications, re-engajamento ou win-back
+- Definir ou revisar o modelo de assinatura/freemium e fluxos de upgrade para premium
+- Implementar coleta de NPS, feedback in-app ou pesquisas de satisfação
+- Analisar métricas de retenção, churn ou adoção de features no produto
+
+**Acionar `content-marketer` quando:**
+- Escrever ou revisar a descrição do app na App Store / Google Play e screenshots
+- Criar conteúdo para landing page, redes sociais ou e-mail marketing do Acollya
+- Escrever copy para push notifications, e-mails transacionais ou sequências de onboarding
+- Definir ou revisar o tom de voz e brand voice em comunicações externas
+- Criar conteúdo educativo sobre saúde mental para aquisição orgânica ou blog
+
+**Acionar `technical-writer` quando:**
+- Adicionar novos endpoints à API que exijam documentação para parceiros ou integradores
+- Criar ou atualizar guias de integração para parceiros (clínicas, planos de saúde)
+- Documentar novas features para usuários finais ou equipe interna
+- Criar changelog, release notes ou documentação de SDK
+- Revisar documentação existente para clareza, completude ou precisão técnica
+
 ---
 
 ## Regras Gerais
