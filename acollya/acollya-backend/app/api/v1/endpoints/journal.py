@@ -25,6 +25,7 @@ from app.schemas.journal import (
     JournalListResponse,
     JournalPromptSuggestionsResponse,
 )
+from app.core.crisis_detector import detect_crisis
 from app.services import journal_service
 from app.services.persona_service import bg_extract_and_upsert_facts
 
@@ -51,7 +52,14 @@ async def create_entry(
         source="journal",
         source_id=uuid.UUID(entry.id) if isinstance(entry.id, str) else entry.id,
     )
-    return entry
+    crisis_level = None
+    try:
+        _crisis = detect_crisis(body.content)
+        if _crisis.level.value != "none":
+            crisis_level = _crisis.level.value
+    except Exception:
+        pass
+    return entry.model_copy(update={"crisis_level": crisis_level})
 
 
 @router.get(

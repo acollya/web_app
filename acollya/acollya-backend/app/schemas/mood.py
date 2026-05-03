@@ -6,8 +6,8 @@ MoodCheckinResponse — single check-in record
 MoodHistoryResponse — paginated list
 MoodInsightsResponse — aggregated stats (period: week | month | year)
 
-Intensity scale: 1–5 (matches DB constraint ck_mood_intensity).
-  1 = very low / negative,  5 = very high / positive
+Intensity scale: 1–10 (matches DB constraint ck_mood_intensity).
+  1 = very low / negative,  10 = very high / positive
 """
 import uuid
 from datetime import datetime
@@ -55,8 +55,8 @@ class MoodCheckinCreate(BaseModel):
         return v
     intensity: int = Field(
         ge=1,
-        le=5,
-        description="Intensity level from 1 (very low) to 5 (very high)",
+        le=10,
+        description="Intensity level from 1 (very low) to 10 (very high)",
     )
     note: Optional[str] = Field(
         None,

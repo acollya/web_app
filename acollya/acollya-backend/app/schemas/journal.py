@@ -40,6 +40,7 @@ class JournalEntryResponse(BaseModel):
     title: Optional[str]
     content: str
     ai_reflection: Optional[str]
+    crisis_level: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 
