@@ -26,10 +26,37 @@ from app.schemas.journal import (
     JournalPromptSuggestionsResponse,
 )
 from app.core.crisis_detector import detect_crisis
+from app.database import AsyncSessionLocal
+from app.models.crisis_event import CrisisEvent
 from app.services import journal_service
 from app.services.persona_service import bg_extract_and_upsert_facts
 
+import logging
+_log = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+async def _bg_log_journal_crisis(
+    user_id: uuid.UUID,
+    crisis_level: str,
+    cvv_shown: bool,
+    source_message_id: uuid.UUID,
+) -> None:
+    """Fire-and-forget crisis audit log for journal entries."""
+    async with AsyncSessionLocal() as session:
+        try:
+            event = CrisisEvent(
+                user_id=user_id,
+                crisis_level=crisis_level,
+                cvv_shown=cvv_shown,
+                source="journal",
+                source_message_id=source_message_id,
+            )
+            session.add(event)
+            await session.commit()
+        except Exception as exc:
+            _log.warning("Background journal crisis_event log failed: %s", exc)
 
 
 @router.post(
@@ -57,6 +84,14 @@ async def create_entry(
         _crisis = detect_crisis(body.content)
         if _crisis.level.value != "none":
             crisis_level = _crisis.level.value
+            source_id = uuid.UUID(entry.id) if isinstance(entry.id, str) else entry.id
+            background_tasks.add_task(
+                _bg_log_journal_crisis,
+                user_id=current_user.id,
+                crisis_level=crisis_level,
+                cvv_shown=_crisis.should_show_cvv,
+                source_message_id=source_id,
+            )
     except Exception:
         pass
     return entry.model_copy(update={"crisis_level": crisis_level})

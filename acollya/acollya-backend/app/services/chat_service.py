@@ -51,6 +51,7 @@ from app.core.exceptions import AuthorizationError, NotFoundError
 from app.database import AsyncSessionLocal
 from app.models.chat_message import ChatMessage
 from app.models.chat_session import ChatSession
+from app.models.crisis_event import CrisisEvent
 from app.models.user import User
 from app.services.persona_service import extract_and_upsert_facts, get_persona_context
 from app.services.rag_service import embed_and_store, retrieve_context
@@ -212,6 +213,30 @@ def _check_persona_leak(content: str, user_id: object) -> None:
 # ── Background task wrappers ───────────────────────────────────────────────────
 # Each wrapper opens its own AsyncSession so it never touches the request-scoped
 # session that may already be closed when FastAPI runs BackgroundTasks.
+
+async def _bg_log_crisis_event(
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    crisis_level: str,
+    cvv_shown: bool,
+    source_message_id: Optional[uuid.UUID] = None,
+) -> None:
+    """Persist a crisis event for audit/probatório purposes. Fire-and-forget."""
+    async with AsyncSessionLocal() as db:
+        try:
+            event = CrisisEvent(
+                user_id=user_id,
+                session_id=session_id,
+                crisis_level=crisis_level,
+                cvv_shown=cvv_shown,
+                source="chat",
+                source_message_id=source_message_id,
+            )
+            db.add(event)
+            await db.commit()
+        except Exception as exc:
+            logger.warning("Background crisis_event log failed: %s", exc)
+
 
 async def _bg_embed(msg_id: uuid.UUID, table: str, text: str) -> None:
     async with AsyncSessionLocal() as db:
@@ -628,14 +653,21 @@ async def send_message(
     await db.commit()
     await db.refresh(assistant_msg)
 
+    cvv_shown = crisis_level in (CrisisLevel.HIGH, CrisisLevel.CRITICAL)
     if background_tasks is not None:
         background_tasks.add_task(_bg_embed, user_msg.id, "chat_messages", user_content)
         background_tasks.add_task(_bg_extract_facts, user.id, user_content, "chat", user_msg.id)
         background_tasks.add_task(_bg_maybe_summarize, session_id)
+        if crisis_level != CrisisLevel.NONE:
+            background_tasks.add_task(
+                _bg_log_crisis_event, user.id, session_id, crisis_level.value, cvv_shown, user_msg.id
+            )
     else:
         await _bg_embed(user_msg.id, "chat_messages", user_content)
         await _bg_extract_facts(user.id, user_content, "chat", user_msg.id)
         await _bg_maybe_summarize(session_id)
+        if crisis_level != CrisisLevel.NONE:
+            await _bg_log_crisis_event(user.id, session_id, crisis_level.value, cvv_shown, user_msg.id)
 
     logger.info(
         "Chat message sent (non-stream): user=%s session=%s tokens=%s crisis=%s intent=%s",
@@ -805,14 +837,21 @@ async def stream_message(
     )
     yield f"data: {done_payload.model_dump_json()}\n\n"
 
+    cvv_shown = crisis_level in (CrisisLevel.HIGH, CrisisLevel.CRITICAL)
     if background_tasks is not None:
         background_tasks.add_task(_bg_embed, user_msg.id, "chat_messages", user_content)
         background_tasks.add_task(_bg_extract_facts, user.id, user_content, "chat", user_msg.id)
         background_tasks.add_task(_bg_maybe_summarize, session_id)
+        if crisis_level != CrisisLevel.NONE:
+            background_tasks.add_task(
+                _bg_log_crisis_event, user.id, session_id, crisis_level.value, cvv_shown, user_msg.id
+            )
     else:
         await _bg_embed(user_msg.id, "chat_messages", user_content)
         await _bg_extract_facts(user.id, user_content, "chat", user_msg.id)
         await _bg_maybe_summarize(session_id)
+        if crisis_level != CrisisLevel.NONE:
+            await _bg_log_crisis_event(user.id, session_id, crisis_level.value, cvv_shown, user_msg.id)
 
     logger.info(
         "Chat message sent (stream): user=%s session=%s tokens=%s crisis=%s intent=%s",
