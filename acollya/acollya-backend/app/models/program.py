@@ -23,7 +23,8 @@ from app.database import Base
 class Program(Base):
     __tablename__ = "programs"
 
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     category: Mapped[str] = mapped_column(Text, nullable=False)
@@ -45,8 +46,11 @@ class Program(Base):
 class Chapter(Base):
     __tablename__ = "chapters"
 
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    program_id: Mapped[str] = mapped_column(Text, ForeignKey("programs.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    program_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("programs.id", ondelete="CASCADE"), nullable=False
+    )
     order: Mapped[int] = mapped_column(Integer, nullable=False)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)

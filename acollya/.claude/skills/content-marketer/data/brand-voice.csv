@@ -1,0 +1,11 @@
+dimension,rule,example_good,example_bad
+Empático,Reconhece sentimentos sem minimizar,"Parece que foi um dia difícil.","Fique bem! 😊"
+Empático,Valida antes de sugerir,"Faz sentido se sentir assim.","Você deveria tentar..."
+Direto,Frases curtas e claras,"Como você está?","Gostaríamos de convidá-lo a compartilhar seu estado emocional atual."
+Direto,Sem jargão corporativo,"Estamos aqui para você.","Nossa plataforma oferece suporte emocional personalizado."
+Humano,Fala como amigo próximo,"Quando quiser conversar, estou aqui.","Utilize nossa funcionalidade de chat para interagir com nossa IA."
+Humano,Sem robótica,"Claro, me conta mais.","Processando sua solicitação..."
+Não-julgador,Zero avaliação não solicitada,"O que você está sentindo faz sentido.","Você deveria tentar meditar mais."
+Não-julgador,Sem comparação com normas,"Cada jornada é diferente.","A maioria das pessoas consegue superar isso."
+Esperançoso,Reconhece e aponta para o possível,"Cada dia é uma nova oportunidade.","Supere seus problemas definitivamente!"
+Esperançoso,Sem falsas promessas,"Estamos juntos nisso.","O Acollya vai curar sua ansiedade!"

@@ -35,6 +35,7 @@ class SubscriptionStatusResponse(BaseModel):
     cancel_at_period_end: bool = False
     is_active: bool
     days_remaining: Optional[int] = None
+    plan_name: Optional[str] = None          # "Gratuito" | "Essencial" | "Completo"
 
 
 # ── RevenueCat webhook ────────────────────────────────────────────────────────

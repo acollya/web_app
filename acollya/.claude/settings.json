@@ -66,7 +66,14 @@
       "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/acollya-backend/bin/alembic upgrade *)",
       "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/acollya-backend/bin/alembic --version)",
       "Bash(/opt/homebrew/Caskroom/miniconda/base/envs/acollya-backend/bin/python -c \"import sqlalchemy; print\\(sqlalchemy.__version__\\)\")",
-      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); deps={**d.get\\('dependencies',{}\\), **d.get\\('devDependencies',{}\\)}; [print\\(k,v\\) for k,v in sorted\\(deps.items\\(\\)\\) if any\\(x in k for x in ['expo','reanimated','react-native','haptic','blur','navigation','tanstack','zustand']\\)]\")"
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); deps={**d.get\\('dependencies',{}\\), **d.get\\('devDependencies',{}\\)}; [print\\(k,v\\) for k,v in sorted\\(deps.items\\(\\)\\) if any\\(x in k for x in ['expo','reanimated','react-native','haptic','blur','navigation','tanstack','zustand']\\)]\")",
+      "Read(//Users/kadu/.claude/projects/-Users-kadu-Documents-VsCode-Acollya_Web-web_app/memory/**)",
+      "Bash(python -m py_compile app/api/v1/endpoints/journal.py app/schemas/journal.py app/schemas/mood.py migrations/versions/017_intensity_1_10.py)",
+      "Bash(gh api *)",
+      "Bash(python3 -c ' *)",
+      "Bash(git submodule *)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\('slug:', d['expo'].get\\('slug'\\)\\); print\\('scheme:', d['expo'].get\\('scheme'\\)\\); print\\('android pkg:', d['expo'].get\\('android',{}\\).get\\('package'\\)\\); print\\('ios bundle:', d['expo'].get\\('ios',{}\\).get\\('bundleIdentifier'\\)\\)\")",
+      "WebSearch"
     ],
     "additionalDirectories": [
       "/Users/kadu/.claude/projects/-Users-kadu-Documents-VsCode-Acollya-Web-web-app-acollya/memory",

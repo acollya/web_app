@@ -133,6 +133,11 @@ async def require_premium(
     """
     from datetime import UTC, datetime
 
+    # Fast path: colunas do próprio User (fonte de verdade do RevenueCat webhook).
+    # Cobre plan_code 1/2 com subscription_status active/trialing e trial ativo.
+    if user.is_premium:
+        return user
+
     # Check active subscription in DB
     result = await db.execute(
         select(Subscription).where(

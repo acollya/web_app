@@ -1,0 +1,21 @@
+term,reason,safe_alternative
+psicoterapia,Exercício ilegal de profissão regulamentada (CFP),conversa de bem-estar
+psicoterapeuta,Título profissional regulamentado,apoio de IA
+diagnóstico,Prática clínica proibida por IA,insight / percepção
+diagnosticar,Prática clínica proibida por IA,identificar / perceber
+tratamento,Implica relação terapêutica formal,acompanhamento / cuidado
+tratar,Implica relação terapêutica formal,ajudar / apoiar
+clínico,Contexto médico formal,—
+clínica,Contexto médico formal,—
+terapia por IA,Posicionamento proibido pelo CFP,apoio de IA / conversa guiada
+alternativa ao psicólogo,Comparação implícita que pode enganar usuário,complemento ao cuidado profissional
+alternativa à terapia,Mesmo problema acima,—
+prescrição,Prática médica,—
+medicação,Prática médica — nunca recomendar,—
+remédio,Prática médica — nunca mencionar,—
+curar,Promessa de resultado médico,ajudar / apoiar
+cura,Promessa de resultado médico,melhora / bem-estar
+transtorno,Diagnóstico clínico,dificuldade / desafio
+doença mental,Diagnóstico clínico,saúde mental / bem-estar emocional
+depressão (como diagnóstico),Diagnóstico clínico — ok mencionar no contexto de usuário falando,—
+ansiedade (como diagnóstico),Diagnóstico clínico — ok no contexto mas não diagnosticar,—

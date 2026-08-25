@@ -76,8 +76,9 @@ class Settings(BaseSettings):
     anthropic_insight_model: str = "claude-haiku-4-5-20251001"
 
     # ── App Config ────────────────────────────────────────────────────────────
-    trial_days: int = 14
-    free_chat_messages_per_day: int = 20
+    trial_days: int = 7
+    free_chat_messages_per_day: int = 10
+    essencial_chat_messages_per_day: int = 20
     premium_chat_messages_per_day: int = 9999
 
     # ── RevenueCat (IAP webhook) ──────────────────────────────────────────────

@@ -13,6 +13,7 @@ Progress model:
   We use select-then-insert/update pattern (async-safe upsert).
 """
 import logging
+import uuid
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -45,6 +46,7 @@ def _build_chapter_response(
     prog = progress_map.get(chapter.id)
     base: dict = {
         "id": chapter.id,
+        "slug": chapter.slug,
         "order": chapter.order,
         "title": chapter.title,
         "content_type": chapter.content_type,
@@ -61,7 +63,7 @@ def _calc_progress(total: int, completed: int) -> int:
     return round(completed / total * 100) if total else 0
 
 
-async def _chapter_count(db: AsyncSession, program_id: str) -> int:
+async def _chapter_count(db: AsyncSession, program_id: uuid.UUID) -> int:
     result = await db.execute(
         select(func.count()).select_from(Chapter).where(Chapter.program_id == program_id)
     )
@@ -69,7 +71,7 @@ async def _chapter_count(db: AsyncSession, program_id: str) -> int:
 
 
 async def _build_progress_response(
-    db: AsyncSession, user: User, program_id: str
+    db: AsyncSession, user: User, program_id: uuid.UUID
 ) -> ProgramProgressResponse:
     total = await _chapter_count(db, program_id)
 
@@ -120,6 +122,7 @@ async def list_programs(db: AsyncSession, user: User) -> list[ProgramResponse]:
         completed = sum(1 for p in by_program.get(program.id, []) if p.completed)
         output.append(ProgramResponse(
             id=program.id,
+            slug=program.slug,
             title=program.title,
             description=program.description,
             category=program.category,
@@ -136,7 +139,7 @@ async def list_programs(db: AsyncSession, user: User) -> list[ProgramResponse]:
 # ── Get program detail ────────────────────────────────────────────────────────
 
 async def get_program(
-    db: AsyncSession, user: User, program_id: str
+    db: AsyncSession, user: User, program_id: uuid.UUID
 ) -> ProgramDetailResponse:
     result = await db.execute(
         select(Program).where(Program.id == program_id, Program.is_active == True)  # noqa: E712
@@ -162,6 +165,7 @@ async def get_program(
 
     return ProgramDetailResponse(
         id=program.id,
+        slug=program.slug,
         title=program.title,
         description=program.description,
         category=program.category,
@@ -178,7 +182,7 @@ async def get_program(
 # ── Get chapter detail ────────────────────────────────────────────────────────
 
 async def get_chapter(
-    db: AsyncSession, user: User, program_id: str, chapter_id: str
+    db: AsyncSession, user: User, program_id: uuid.UUID, chapter_id: uuid.UUID
 ) -> ChapterDetailResponse:
     prog_result = await db.execute(
         select(Program).where(Program.id == program_id, Program.is_active == True)  # noqa: E712
@@ -209,7 +213,7 @@ async def get_chapter(
 # ── Complete / reset chapter ──────────────────────────────────────────────────
 
 async def complete_chapter(
-    db: AsyncSession, user: User, program_id: str, chapter_id: str
+    db: AsyncSession, user: User, program_id: uuid.UUID, chapter_id: uuid.UUID
 ) -> ProgramProgressResponse:
     ch_result = await db.execute(
         select(Chapter).where(Chapter.id == chapter_id, Chapter.program_id == program_id)
@@ -245,7 +249,7 @@ async def complete_chapter(
 
 
 async def reset_chapter(
-    db: AsyncSession, user: User, program_id: str, chapter_id: str
+    db: AsyncSession, user: User, program_id: uuid.UUID, chapter_id: uuid.UUID
 ) -> ProgramProgressResponse:
     prog_result = await db.execute(
         select(ProgramProgress).where(
@@ -308,3 +312,74 @@ async def get_user_summary(db: AsyncSession, user: User) -> UserProgramsSummary:
         completed_programs=completed,
         items=items,
     )
+
+
+# ── Recomendação personalizada ────────────────────────────────────────────────
+# Ranqueia programas pela proximidade semântica entre o que o usuário expressou
+# recentemente (chat, diário, humor — embeddings já gerados pelo pipeline RAG)
+# e o conteúdo dos capítulos. Sem sinais, cai no fallback por sort_order.
+
+_RECO_SIGNALS_PER_SOURCE = 10
+
+
+async def _recent_user_embedding(db: AsyncSession, user: User) -> list[float] | None:
+    """Média dos embeddings recentes do usuário (chat/journal/mood). None se não há sinais."""
+    from app.models.chat_message import ChatMessage
+    from app.models.journal_entry import JournalEntry
+    from app.models.mood_checkin import MoodCheckin
+
+    vectors: list[list[float]] = []
+    sources = [
+        select(ChatMessage.embedding)
+        .where(
+            ChatMessage.user_id == user.id,
+            ChatMessage.role == "user",
+            ChatMessage.embedding.isnot(None),
+        )
+        .order_by(ChatMessage.created_at.desc())
+        .limit(_RECO_SIGNALS_PER_SOURCE),
+        select(JournalEntry.embedding)
+        .where(JournalEntry.user_id == user.id, JournalEntry.embedding.isnot(None))
+        .order_by(JournalEntry.created_at.desc())
+        .limit(_RECO_SIGNALS_PER_SOURCE),
+        select(MoodCheckin.embedding)
+        .where(MoodCheckin.user_id == user.id, MoodCheckin.embedding.isnot(None))
+        .order_by(MoodCheckin.created_at.desc())
+        .limit(_RECO_SIGNALS_PER_SOURCE),
+    ]
+    for stmt in sources:
+        for (emb,) in (await db.execute(stmt)).all():
+            if emb is not None:
+                vectors.append(list(emb))
+
+    if not vectors:
+        return None
+    dim = len(vectors[0])
+    return [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
+
+
+async def get_recommended(
+    db: AsyncSession, user: User, limit: int = 5
+) -> list[ProgramResponse]:
+    """
+    2–5 programas recomendados para o usuário.
+
+    Ordena por menor distância cosseno entre a média dos embeddings recentes do
+    usuário e o capítulo mais próximo de cada programa. Programas 100%
+    concluídos ficam de fora. Fallback (usuário sem sinais): ordem do catálogo.
+    """
+    programs = await list_programs(db, user)
+    candidates = [p for p in programs if p.progress_pct < 100]
+
+    user_vec = await _recent_user_embedding(db, user)
+    if user_vec is not None:
+        dist = Chapter.embedding.cosine_distance(user_vec)
+        rows = await db.execute(
+            select(Chapter.program_id, func.min(dist).label("d"))
+            .where(Chapter.embedding.isnot(None))
+            .group_by(Chapter.program_id)
+        )
+        score = {row.program_id: row.d for row in rows}
+        candidates.sort(key=lambda p: score.get(p.id, float("inf")))
+
+    return candidates[:limit]

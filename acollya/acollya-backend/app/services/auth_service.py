@@ -30,7 +30,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
-from sqlalchemy import select
+from sqlalchemy import func, select, update as sql_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -49,6 +49,7 @@ from app.core.exceptions import (
     InvalidTokenError,
 )
 from app.models.user import User
+from app.models.user_session import UserSession
 from app.schemas.auth import AppleAuthRequest, GoogleAuthRequest, LoginRequest, RegisterRequest, TokenResponse
 from app.schemas.user import UserResponse
 
@@ -204,6 +205,64 @@ async def revoke_all_sessions(redis: Redis, user_id: str) -> int:
     return len(jtis)
 
 
+# ── Auditoria de sessões (user_sessions) ──────────────────────────────────────
+# Histórico de login/logout para LGPD e suporte. Sessões ATIVAS (revogação)
+# continuam no Redis via jti — esta tabela é apenas trilha de auditoria.
+
+def _device_type_from_ua(user_agent: str | None) -> str | None:
+    if not user_agent:
+        return None
+    ua = user_agent.lower()
+    if "android" in ua:
+        return "android"
+    if any(k in ua for k in ("iphone", "ipad", "ios", "darwin", "cfnetwork")):
+        return "ios"
+    return "web"
+
+
+async def record_session_login(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    session_type: str,
+    user_agent: str | None = None,
+) -> None:
+    """Registra o login em user_sessions. Best-effort — nunca falha o login."""
+    try:
+        db.add(
+            UserSession(
+                user_id=user_id,
+                session_type=session_type,
+                user_agent=(user_agent or None) and user_agent[:512],
+                device_type=_device_type_from_ua(user_agent),
+            )
+        )
+        await db.commit()
+    except Exception:
+        logger.warning("user_sessions: falha ao registrar login", exc_info=True)
+        await db.rollback()
+
+
+async def record_session_logout(db: AsyncSession, user_id: uuid.UUID) -> None:
+    """Carimba logout_at na sessão aberta mais recente. Best-effort."""
+    try:
+        latest_open = (
+            select(UserSession.id)
+            .where(UserSession.user_id == user_id, UserSession.logout_at.is_(None))
+            .order_by(UserSession.login_at.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        await db.execute(
+            sql_update(UserSession)
+            .where(UserSession.id == latest_open)
+            .values(logout_at=func.now())
+        )
+        await db.commit()
+    except Exception:
+        logger.warning("user_sessions: falha ao registrar logout", exc_info=True)
+        await db.rollback()
+
+
 def _build_token_response(
     user: User,
     access_token: str,
@@ -222,7 +281,9 @@ def _build_token_response(
 
 # ── Register ───────────────────────────────────────────────────────────────────
 
-async def register(db: AsyncSession, redis: Redis, req: RegisterRequest) -> TokenResponse:
+async def register(
+    db: AsyncSession, redis: Redis, req: RegisterRequest, user_agent: str | None = None
+) -> TokenResponse:
     # Duplicate email check
     existing = await db.execute(select(User).where(User.email == req.email))
     if existing.scalar_one_or_none():
@@ -247,12 +308,15 @@ async def register(db: AsyncSession, redis: Redis, req: RegisterRequest) -> Toke
     await _store_jti(redis, jti, str(user.id))
 
     logger.info("New user registered: %s", user.id)
+    await record_session_login(db, user.id, "password", user_agent)
     return _build_token_response(user, access_token, refresh_token, is_new_user=True)
 
 
 # ── Login ──────────────────────────────────────────────────────────────────────
 
-async def login(db: AsyncSession, redis: Redis, req: LoginRequest) -> TokenResponse:
+async def login(
+    db: AsyncSession, redis: Redis, req: LoginRequest, user_agent: str | None = None
+) -> TokenResponse:
     result = await db.execute(select(User).where(User.email == req.email))
     user: User | None = result.scalar_one_or_none()
 
@@ -271,6 +335,7 @@ async def login(db: AsyncSession, redis: Redis, req: LoginRequest) -> TokenRespo
     refresh_token, jti = create_refresh_token(str(user.id))
     await _store_jti(redis, jti, str(user.id))
 
+    await record_session_login(db, user.id, "password", user_agent)
     return _build_token_response(user, access_token, refresh_token)
 
 
@@ -303,12 +368,15 @@ async def refresh_tokens(
 
 # ── Logout ─────────────────────────────────────────────────────────────────────
 
-async def logout(redis: Redis, refresh_token: str) -> None:
+async def logout(redis: Redis, refresh_token: str, db: AsyncSession | None = None) -> None:
     try:
         payload = decode_refresh_token(refresh_token)
         jti: str = payload.get("jti", "")
         if jti:
             await _revoke_jti(redis, jti)
+        user_id: str = payload.get("sub", "")
+        if db is not None and user_id:
+            await record_session_logout(db, uuid.UUID(user_id))
     except Exception:
         # Logout is always successful from the client's perspective
         pass
@@ -317,7 +385,7 @@ async def logout(redis: Redis, refresh_token: str) -> None:
 # ── Google OAuth ───────────────────────────────────────────────────────────────
 
 async def google_auth(
-    db: AsyncSession, redis: Redis, req: GoogleAuthRequest
+    db: AsyncSession, redis: Redis, req: GoogleAuthRequest, user_agent: str | None = None
 ) -> TokenResponse:
     google_data = await verify_google_id_token(req.id_token)
     google_id: str = google_data["sub"]
@@ -363,11 +431,12 @@ async def google_auth(
     refresh_token, jti = create_refresh_token(str(user.id))
     await _store_jti(redis, jti, str(user.id))
 
+    await record_session_login(db, user.id, "google", user_agent)
     return _build_token_response(user, access_token, refresh_token, is_new_user=is_new_user)
 
 
 async def apple_auth(
-    db: AsyncSession, redis: Redis, req: AppleAuthRequest
+    db: AsyncSession, redis: Redis, req: AppleAuthRequest, user_agent: str | None = None
 ) -> TokenResponse:
     apple_data = await verify_apple_identity_token(req.identity_token)
     apple_id: str = apple_data["sub"]
@@ -415,4 +484,5 @@ async def apple_auth(
     refresh_token, jti = create_refresh_token(str(user.id))
     await _store_jti(redis, jti, str(user.id))
 
+    await record_session_login(db, user.id, "apple", user_agent)
     return _build_token_response(user, access_token, refresh_token, is_new_user=is_new_user)

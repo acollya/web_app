@@ -77,25 +77,28 @@ Os subagentes abaixo estão instalados em `.claude/agents/` e devem ser acionado
 - Lidar com navegação (`@react-navigation`), animações (`react-native-reanimated`)
 - Configurar OTA updates, push notifications, ou App Store/Play Store
 
-**Acionar `ui-ux-pro-max` quando:**
+**Usar skill `ui-ux-pro-max` quando:**
 - Criar ou modificar telas em `acollya-mobile/src/screens/`
 - Trabalhar com componentes visuais em `acollya-mobile/src/components/`
 - Definir estilos, layouts, paleta de cores, tipografia ou fluxos de navegação
 - Implementar animações, transições ou estados de UI (loading, empty, error)
+- (skill — injeta guia de design com 67 estilos, 96 paletas, regras UX no contexto atual)
 
-**Acionar `accessibility-tester` quando:**
+**Usar skill `accessibility-tester` quando:**
 - Criar ou modificar telas que contenham inputs, modais, banners ou alertas
 - Modificar o `CrisisBanner` ou qualquer componente relacionado a crises
 - Implementar novos fluxos de onboarding ou formulários
 - Revisar qualquer tela antes de considerar completa
+- (skill — injeta checklist WCAG + React Native a11y no contexto atual)
 
 ### Qualidade & Testes
 
-**Acionar `qa-expert` quando:**
+**Usar skill `qa-expert` quando:**
 - Finalizar qualquer nova feature ou fluxo completo
 - Avaliar cobertura de testes do projeto
 - Identificar riscos de qualidade em mudanças significativas
 - Planejar estratégia de testes para uma área nova
+- (skill — injeta mapa de risco, critérios de release e checklists de qualidade no contexto atual)
 
 **Acionar `test-automator` quando:**
 - Criar ou modificar services, endpoints ou components sem teste correspondente
@@ -196,12 +199,13 @@ Os subagentes abaixo estão instalados em `.claude/agents/` e devem ser acionado
 - Implementar coleta de NPS, feedback in-app ou pesquisas de satisfação
 - Analisar métricas de retenção, churn ou adoção de features no produto
 
-**Acionar `content-marketer` quando:**
+**Usar skill `content-marketer` quando:**
 - Escrever ou revisar a descrição do app na App Store / Google Play e screenshots
 - Criar conteúdo para landing page, redes sociais ou e-mail marketing do Acollya
 - Escrever copy para push notifications, e-mails transacionais ou sequências de onboarding
 - Definir ou revisar o tom de voz e brand voice em comunicações externas
 - Criar conteúdo educativo sobre saúde mental para aquisição orgânica ou blog
+- (skill — injeta brand voice, termos proibidos e regras de copy Acollya no contexto atual)
 
 **Acionar `technical-writer` quando:**
 - Adicionar novos endpoints à API que exijam documentação para parceiros ou integradores
@@ -218,8 +222,13 @@ Os subagentes abaixo estão instalados em `.claude/agents/` e devem ser acionado
 2. **Sempre usar `code-reviewer`** antes de sugerir commit em `main` com mudanças em serviços críticos.
 3. **Nunca fazer diagnóstico, prescrever medicação** — verificar que o sistema prompt do Acollya mantém esse limite em qualquer alteração de prompt.
 4. **LGPD first** — qualquer feature nova que envolva dado pessoal deve passar por `compliance-auditor` antes de ser considerada completa.
-5. **Crisis detection** — ao modificar `crisis_detector.py` ou o fluxo SSE, sempre acionar `qa-expert` para validar os padrões regex e o fluxo de CVV.
+5. **Crisis detection** — ao modificar `crisis_detector.py` ou o fluxo SSE, sempre usar skill `qa-expert` para validar os padrões regex e o fluxo de CVV.
 6. **Embeddings são críticos** — mudanças em threshold, modelo ou dimensão de embedding exigem `llm-architect` + `database-optimizer` antes de aplicar.
+7. **Atualizar knowledge base** — ao concluir qualquer implementação significativa, atualizar os arquivos em `.claude/knowledge/`:
+   - `implementation-status.md` — marcar features como ✅ ou ❌
+   - `known-issues.md` — mover bugs resolvidos para "Resolvidos" com data e fix
+   - `decisions.md` — registrar novas decisões arquiteturais com ADR
+   - `legal-checklist.md` — marcar itens LGPD endereçados como ✅
 
 ---
 
@@ -243,8 +252,30 @@ acollya/
 │       └── hooks/               # useAudioRecorder, useAuth
 ├── acollya-infra/               # AWS CDK stacks
 └── .claude/
-    └── agents/                  # Subagentes instalados
+    ├── agents/                  # 23 subagentes especializados
+    ├── skills/                  # 4 skills (injetam conhecimento no contexto atual)
+    │   ├── accessibility-tester/ # WCAG + React Native a11y
+    │   ├── content-marketer/    # Brand voice, termos proibidos, copy rules
+    │   ├── qa-expert/           # Mapa de risco, release criteria
+    │   └── ui-ux-pro-max/       # Design intelligence (67 estilos, 96 paletas)
+    └── knowledge/               # Second brain — estado vivo do projeto
+        ├── implementation-status.md  # O que está feito / pendente
+        ├── known-issues.md           # Bugs ativos, riscos de regressão
+        ├── contracts.md              # SSE protocol, plan codes, API contracts
+        ├── decisions.md              # ADRs — por que cada decisão foi tomada
+        ├── legal-checklist.md        # 15 itens LGPD pré-launch
+        └── environment.md            # Setup local, portas, variáveis
 ```
+
+## Knowledge Base — Referência Rápida
+
+Antes de implementar qualquer feature, consultar:
+- **O que já foi feito?** → `.claude/knowledge/implementation-status.md`
+- **Quais bugs devo evitar?** → `.claude/knowledge/known-issues.md`
+- **Quais contratos não posso quebrar?** → `.claude/knowledge/contracts.md`
+- **Por que foi decidido assim?** → `.claude/knowledge/decisions.md`
+- **Está em compliance?** → `.claude/knowledge/legal-checklist.md`
+- **Como configurar o ambiente?** → `.claude/knowledge/environment.md`
 
 ---
 

@@ -9,7 +9,7 @@ DELETE /chat/sessions/{session_id}           — delete session + messages
 POST   /chat/sessions/{session_id}/messages  — send message (streaming SSE)
 GET    /chat/sessions/{session_id}/messages  — message history (paginated)
 
-All endpoints require an active trial or subscription (require_premium).
+Todos os endpoints exigem autenticação; limites de uso por plano são aplicados pelo rate limiter (10/20/ilimitado msgs/dia).
 
 Streaming endpoint
 ------------------
@@ -39,7 +39,7 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.dependencies import get_db, get_redis, require_premium
+from app.core.dependencies import get_current_user, get_db, get_redis
 from app.core.exceptions import RateLimitError
 from app.core.rate_limiter import RateLimiter
 from app.models.user import User
@@ -63,11 +63,11 @@ router = APIRouter()
 
 def _message_limit(user: User) -> int:
     """Return the daily message limit for the user's plan."""
-    return (
-        settings.premium_chat_messages_per_day
-        if user.is_premium
-        else settings.free_chat_messages_per_day
-    )
+    if user.plan_code == 2:
+        return settings.premium_chat_messages_per_day  # completo = ilimitado
+    if user.plan_code == 1:
+        return settings.essencial_chat_messages_per_day  # essencial = 20/dia
+    return settings.free_chat_messages_per_day  # free = 10/dia
 
 
 # ── Sessions ───────────────────────────────────────────────────────────────────
@@ -80,7 +80,7 @@ def _message_limit(user: User) -> int:
 )
 async def create_session(
     body: ChatSessionCreate,
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ChatSessionResponse:
     return await chat_service.create_session(db, current_user, body)
@@ -92,7 +92,7 @@ async def create_session(
     summary="List chat sessions (paginated, newest first)",
 )
 async def list_sessions(
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
@@ -107,7 +107,7 @@ async def list_sessions(
 )
 async def get_session(
     session_id: uuid.UUID,
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ChatSessionResponse:
     return await chat_service.get_session(db, current_user, session_id)
@@ -120,7 +120,7 @@ async def get_session(
 )
 async def delete_session(
     session_id: uuid.UUID,
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Response:
     await chat_service.delete_session(db, current_user, session_id)
@@ -136,7 +136,7 @@ async def delete_session(
 )
 async def list_messages(
     session_id: uuid.UUID,
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
@@ -160,7 +160,7 @@ async def send_message(
     session_id: uuid.UUID,
     body: SendMessageRequest,
     background_tasks: BackgroundTasks,
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> StreamingResponse:
@@ -188,7 +188,7 @@ async def send_message(
             headers["Retry-After"] = str(exc.retry_after)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={"detail": "Rate limit exceeded. Try again later."},
+            content={"detail": "Limite de mensagens diário atingido. Tente novamente amanhã."},
             headers=headers,
         )
 

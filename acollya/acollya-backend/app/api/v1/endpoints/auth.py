@@ -37,10 +37,11 @@ router = APIRouter()
 )
 async def register(
     body: RegisterRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
-    return await auth_service.register(db, redis, body)
+    return await auth_service.register(db, redis, body, request.headers.get("user-agent"))
 
 
 @router.post(
@@ -50,10 +51,11 @@ async def register(
 )
 async def login(
     body: LoginRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
-    return await auth_service.login(db, redis, body)
+    return await auth_service.login(db, redis, body, request.headers.get("user-agent"))
 
 
 @router.post(
@@ -76,9 +78,10 @@ async def refresh(
 )
 async def logout(
     body: RefreshRequest,
+    db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> MessageResponse:
-    await auth_service.logout(redis, body.refresh_token)
+    await auth_service.logout(redis, body.refresh_token, db)
     return MessageResponse(message="Logged out successfully")
 
 
@@ -89,10 +92,11 @@ async def logout(
 )
 async def google_auth(
     body: GoogleAuthRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
-    return await auth_service.google_auth(db, redis, body)
+    return await auth_service.google_auth(db, redis, body, request.headers.get("user-agent"))
 
 
 @router.post(
@@ -102,7 +106,8 @@ async def google_auth(
 )
 async def apple_auth(
     body: AppleAuthRequest,
+    request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TokenResponse:
-    return await auth_service.apple_auth(db, redis, body)
+    return await auth_service.apple_auth(db, redis, body, request.headers.get("user-agent"))

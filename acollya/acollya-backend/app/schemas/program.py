@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field, computed_field
 # ── Chapter ────────────────────────────────────────────────────────────────────
 
 class ChapterResponse(BaseModel):
-    id: str
+    id: uuid.UUID
+    slug: str
     order: int
     title: str
     content_type: str
@@ -39,7 +40,8 @@ class ChapterDetailResponse(ChapterResponse):
 # ── Program ────────────────────────────────────────────────────────────────────
 
 class ProgramResponse(BaseModel):
-    id: str
+    id: uuid.UUID
+    slug: str
     title: str
     description: str
     category: str
@@ -72,7 +74,7 @@ class ChapterProgressUpsert(BaseModel):
 
 
 class ProgramProgressResponse(BaseModel):
-    program_id: str
+    program_id: uuid.UUID
     total_chapters: int
     completed_chapters: int
     progress_pct: int
@@ -83,7 +85,7 @@ class ProgramProgressResponse(BaseModel):
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 class ProgramSummaryItem(BaseModel):
-    program_id: str
+    program_id: uuid.UUID
     program_title: str
     total_chapters: int
     completed_chapters: int

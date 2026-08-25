@@ -22,7 +22,7 @@ class AcollyaException(Exception):
     """Base exception. Catches anything not covered by a subclass."""
 
     status_code: int = 500
-    default_message: str = "Internal server error"
+    default_message: str = "Erro interno do servidor"
 
     def __init__(self, message: str | None = None, detail: Any = None) -> None:
         self.message = message or self.default_message
@@ -34,58 +34,58 @@ class AcollyaException(Exception):
 
 class ValidationError(AcollyaException):
     status_code = 400
-    default_message = "Invalid request data"
+    default_message = "Dados de requisição inválidos"
 
 
 # ── 401 ───────────────────────────────────────────────────────────────────────
 
 class AuthenticationError(AcollyaException):
     status_code = 401
-    default_message = "Authentication required"
+    default_message = "Autenticação necessária"
 
 
 class TokenExpiredError(AuthenticationError):
-    default_message = "Token has expired"
+    default_message = "Token expirado"
 
 
 class InvalidTokenError(AuthenticationError):
-    default_message = "Invalid token"
+    default_message = "Token inválido"
 
 
 # ── 402 ───────────────────────────────────────────────────────────────────────
 
 class PaymentRequiredError(AcollyaException):
     status_code = 402
-    default_message = "A subscription is required to access this feature"
+    default_message = "É necessário ter uma assinatura para acessar este recurso"
 
 
 class TrialExpiredError(PaymentRequiredError):
-    default_message = "Your free trial has ended. Subscribe to continue."
+    default_message = "Seu período de avaliação gratuita encerrou. Assine para continuar."
 
 
 class PremiumRequiredError(PaymentRequiredError):
-    default_message = "This feature requires a premium subscription"
+    default_message = "Este recurso requer uma assinatura premium"
 
 
 # ── 403 ───────────────────────────────────────────────────────────────────────
 
 class AuthorizationError(AcollyaException):
     status_code = 403
-    default_message = "You do not have permission to perform this action"
+    default_message = "Você não tem permissão para realizar esta ação"
 
 
 # ── 404 ───────────────────────────────────────────────────────────────────────
 
 class NotFoundError(AcollyaException):
     status_code = 404
-    default_message = "Resource not found"
+    default_message = "Recurso não encontrado"
 
 
 # ── 409 ───────────────────────────────────────────────────────────────────────
 
 class ConflictError(AcollyaException):
     status_code = 409
-    default_message = "Resource already exists"
+    default_message = "Recurso já existe"
 
 
 # ── 429 ───────────────────────────────────────────────────────────────────────
@@ -94,7 +94,7 @@ class RateLimitError(AcollyaException):
     """Raised when the user hits the chat message rate limit."""
 
     status_code = 429
-    default_message = "Rate limit exceeded. Try again later."
+    default_message = "Limite de requisições atingido. Tente novamente mais tarde."
 
     def __init__(
         self,

@@ -25,6 +25,16 @@ from app.schemas.subscription import (
 
 logger = logging.getLogger(__name__)
 
+# Mapeamento RevenueCat product_id → plan_code interno.
+# Atualizar quando novos produtos forem criados no App Store / Google Play.
+_PRODUCT_PLAN_CODE: dict[str, int] = {
+    "acollya_essencial_monthly": 1,
+    "acollya_completo_monthly": 2,
+}
+_DEFAULT_PAID_PLAN_CODE = 2  # fallback para produtos não mapeados (backward compat)
+
+_PLAN_NAMES = {0: "Gratuito", 1: "Essencial", 2: "Completo"}
+
 
 # ── RevenueCat event constants ───────────────────────────────────────────────
 
@@ -46,37 +56,39 @@ def get_plans() -> PlansResponse:
             price_brl=0.0,
             billing_period=None,
             features=[
-                "Até 20 mensagens por dia com a IA",
+                "Até 10 mensagens por dia com a IA",
                 "Diário pessoal",
-                "Registro de humor",
-                "2 programas gratuitos",
+                "Registro de humor diário",
+                "Histórico dos últimos 7 dias (período de avaliação)",
             ],
             is_popular=False,
         ),
         PlanConfig(
-            id="monthly",
-            name="Premium Mensal",
-            price_brl=17.90,
+            id="essencial",
+            name="Cuidado Essencial",
+            price_brl=39.90,
+            billing_period="month",
+            features=[
+                "Até 20 mensagens por dia com a IA",
+                "Histórico de conversa dos últimos 30 dias",
+                "Insights semanais do seu bem-estar",
+                "3 programas de bem-estar",
+                "Análise do seu perfil dos últimos 30 dias",
+            ],
+            is_popular=False,
+        ),
+        PlanConfig(
+            id="completo",
+            name="Cuidado Completo",
+            price_brl=79.90,
             billing_period="month",
             features=[
                 "Mensagens ilimitadas com a IA",
-                "Todos os programas",
-                "Histórico completo",
-                "Agendamento com terapeutas",
-                "Desconto nas consultas",
-                "Sem anúncios",
-            ],
-            is_popular=False,
-        ),
-        PlanConfig(
-            id="annual",
-            name="Premium Anual",
-            price_brl=179.90,
-            billing_period="year",
-            features=[
-                "Tudo do Premium Mensal",
-                "Economia de 16% ao ano",
-                "Suporte prioritário",
+                "Histórico de conversa completo",
+                "Insights diários e personalizados",
+                "Biblioteca completa de programas (10+)",
+                "Análise completa do seu perfil",
+                "Entrada por voz",
             ],
             is_popular=True,
         ),
@@ -108,6 +120,20 @@ async def get_status(db: AsyncSession, user: User) -> SubscriptionStatusResponse
                 cancel_at_period_end=False,
                 is_active=True,
                 days_remaining=days,
+                plan_name=_PLAN_NAMES.get(user.plan_code, "Gratuito"),
+            )
+        # Fallback: colunas do User dizem que há plano ativo mas não existe
+        # linha em subscriptions (ex: acesso concedido manualmente / suporte).
+        # Mantém o status coerente com o gate require_premium.
+        if user.plan_code in (1, 2) and user.subscription_status in ("active", "trialing"):
+            return SubscriptionStatusResponse(
+                status=user.subscription_status,
+                provider=None,
+                current_period_end=None,
+                cancel_at_period_end=False,
+                is_active=True,
+                days_remaining=None,
+                plan_name=_PLAN_NAMES.get(user.plan_code, "Gratuito"),
             )
         return SubscriptionStatusResponse(
             status="none",
@@ -116,6 +142,7 @@ async def get_status(db: AsyncSession, user: User) -> SubscriptionStatusResponse
             cancel_at_period_end=False,
             is_active=False,
             days_remaining=None,
+            plan_name=_PLAN_NAMES.get(user.plan_code, "Gratuito"),
         )
 
     is_active = sub.status in (SubscriptionStatus.ACTIVE.value, SubscriptionStatus.TRIALING.value)
@@ -134,6 +161,7 @@ async def get_status(db: AsyncSession, user: User) -> SubscriptionStatusResponse
         cancel_at_period_end=sub.cancel_at_period_end,
         is_active=is_active,
         days_remaining=days_remaining,
+        plan_name=_PLAN_NAMES.get(user.plan_code, "Gratuito"),
     )
 
 
@@ -277,7 +305,8 @@ async def handle_revenuecat_event(db: AsyncSession, event: dict[str, Any]) -> No
                 sub.current_period_end = period_end
 
             user.subscription_status = "active"
-            user.plan_code = 1
+            product_id = event.get("product_id") or ""
+            user.plan_code = _PRODUCT_PLAN_CODE.get(product_id, _DEFAULT_PAID_PLAN_CODE)
             # Backfill revenue_cat_id only from the primary app_user_id (never aliases)
             if user.revenue_cat_id is None:
                 aid = event.get("app_user_id")
