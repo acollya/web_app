@@ -1,0 +1,29 @@
+area,item,type,critical
+Auth,JWT access token expiry returns 401,integration,true
+Auth,Refresh token renews access token correctly,integration,true
+Auth,Expired refresh token forces logout,integration,true
+Auth,Google OAuth flow completes successfully on dev client,e2e,true
+Chat,SSE delta events arrive in order,integration,true
+Chat,SSE done event closes stream,integration,true
+Chat,SSE error event returned on rate limit,integration,true
+Chat,Rate limit 10/day enforced for plan_code=0,integration,true
+Chat,Rate limit 20/day enforced for plan_code=1,integration,true
+Chat,Unlimited for plan_code=2,integration,true
+Chat,Rate limit resets at midnight,integration,true
+Crisis,Keywords trigger crisis detection before LLM,unit,true
+Crisis,Crisis detection does not perform I/O,unit,true
+Crisis,CVV number shown in CrisisBanner,e2e,true
+Subscription,GRANT webhook activates correct plan_code,integration,true
+Subscription,REVOKE webhook deactivates plan,integration,true
+Subscription,Trial expires after 7 days,integration,true
+Subscription,plan_name returned correctly in status response,unit,false
+RAG,Relevant context retrieved above 0.45 threshold,integration,false
+RAG,Irrelevant context not retrieved below threshold,integration,false
+Journal,Journal entry persists to database,integration,false
+Journal,Embedding generated in background without blocking,integration,false
+Mood,Mood checkin persists correctly,integration,false
+Mood,Duplicate MoodCheckin screen prevented,e2e,false
+LGPD,Account delete anonymizes data without hard delete,integration,true
+LGPD,Anonymized data not accessible via API,integration,true
+Navigation,HomeScreen subtitle hidden without today mood,unit,false
+Navigation,MoodHistory nav guard prevents duplicate screen,unit,false

@@ -19,7 +19,8 @@ from pydantic import BaseModel, Field, computed_field
 # ── Chapter ────────────────────────────────────────────────────────────────────
 
 class ChapterResponse(BaseModel):
-    id: str
+    id: uuid.UUID
+    slug: str
     order: int
     title: str
     content_type: str
@@ -39,14 +40,24 @@ class ChapterDetailResponse(ChapterResponse):
 # ── Program ────────────────────────────────────────────────────────────────────
 
 class ProgramResponse(BaseModel):
-    id: str
+    id: uuid.UUID
+    slug: str
     title: str
     description: str
+    about: Optional[str] = None
     category: str
     duration_days: int
+    duration_label: Optional[str] = None
+    format: Optional[str] = None
     difficulty: str
+    audience: Optional[str] = None
     cover_image_key: Optional[str]
     is_premium: bool
+    min_plan_code: Optional[int] = None
+    price_min_brl: Optional[float] = None
+    price_max_brl: Optional[float] = None
+    # True quando o plano do usuário inclui este programa (min_plan_code <= plan_code)
+    included_in_plan: bool = False
     total_chapters: int = 0
     completed_chapters: int = 0
 
@@ -72,7 +83,7 @@ class ChapterProgressUpsert(BaseModel):
 
 
 class ProgramProgressResponse(BaseModel):
-    program_id: str
+    program_id: uuid.UUID
     total_chapters: int
     completed_chapters: int
     progress_pct: int
@@ -83,7 +94,7 @@ class ProgramProgressResponse(BaseModel):
 # ── Summary ────────────────────────────────────────────────────────────────────
 
 class ProgramSummaryItem(BaseModel):
-    program_id: str
+    program_id: uuid.UUID
     program_title: str
     total_chapters: int
     completed_chapters: int

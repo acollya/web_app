@@ -11,9 +11,10 @@ DELETE /programs/{program_id}/chapters/{chapter_id}/complete — reset
 Note: /programs/summary must be registered BEFORE /programs/{program_id}
 to avoid FastAPI matching "summary" as a program_id path parameter.
 """
+import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.dependencies import get_db, require_premium
@@ -55,12 +56,29 @@ async def get_user_summary(
 
 
 @router.get(
+    "/recommended",
+    response_model=list[ProgramResponse],
+    summary="Programas recomendados com base nos registros recentes do usuário",
+)
+async def get_recommended(
+    current_user: Annotated[User, Depends(require_premium)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: int = Query(5, ge=2, le=5),
+) -> list[ProgramResponse]:
+    """
+    Ranqueia por proximidade semântica entre os embeddings recentes do usuário
+    (chat, diário, humor) e os capítulos. Fallback: ordem do catálogo.
+    """
+    return await program_service.get_recommended(db, current_user, limit)
+
+
+@router.get(
     "/{program_id}",
     response_model=ProgramDetailResponse,
     summary="Get program detail with chapters and user progress",
 )
 async def get_program(
-    program_id: str,
+    program_id: uuid.UUID,
     current_user: Annotated[User, Depends(require_premium)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProgramDetailResponse:
@@ -73,8 +91,8 @@ async def get_program(
     summary="Get chapter content",
 )
 async def get_chapter(
-    program_id: str,
-    chapter_id: str,
+    program_id: uuid.UUID,
+    chapter_id: uuid.UUID,
     current_user: Annotated[User, Depends(require_premium)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ChapterDetailResponse:
@@ -88,8 +106,8 @@ async def get_chapter(
     summary="Mark a chapter as completed",
 )
 async def complete_chapter(
-    program_id: str,
-    chapter_id: str,
+    program_id: uuid.UUID,
+    chapter_id: uuid.UUID,
     current_user: Annotated[User, Depends(require_premium)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProgramProgressResponse:
@@ -103,8 +121,8 @@ async def complete_chapter(
     summary="Reset a chapter completion",
 )
 async def reset_chapter(
-    program_id: str,
-    chapter_id: str,
+    program_id: uuid.UUID,
+    chapter_id: uuid.UUID,
     current_user: Annotated[User, Depends(require_premium)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProgramProgressResponse:

@@ -1,10 +1,13 @@
 """
 Mood check-in endpoints.
 
-POST /mood              — record a check-in (requires trial/premium)
-GET  /mood              — paginated history
-GET  /mood/insights     — aggregated stats for a period
-POST /mood/{id}/insight — generate AI insight for a check-in (Phase 2)
+POST /mood              — record a check-in (feature do plano Gratuito)
+GET  /mood              — paginated history (feature do plano Gratuito)
+GET  /mood/insights     — aggregated stats (requer trial/assinatura)
+POST /mood/{id}/insight — generate AI insight for a check-in (requer trial/assinatura)
+
+Check-in e histórico são features do plano Gratuito (modelo 3-tier) — apenas
+os insights com IA são pagos.
 """
 import uuid
 from typing import Annotated, Literal
@@ -12,7 +15,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db, require_premium
+from app.core.dependencies import get_current_user, get_db, require_premium
 from app.models.user import User
 from app.schemas.mood import (
     MoodCheckinCreate,
@@ -35,7 +38,7 @@ router = APIRouter()
 async def create_checkin(
     body: MoodCheckinCreate,
     background_tasks: BackgroundTasks,
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MoodCheckinResponse:
     checkin = await mood_service.create_checkin(db, current_user, body, background_tasks)
@@ -57,7 +60,7 @@ async def create_checkin(
     summary="List mood check-in history (paginated)",
 )
 async def list_checkins(
-    current_user: Annotated[User, Depends(require_premium)],
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),

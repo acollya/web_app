@@ -1,0 +1,13 @@
+component,required_props,optional_props,notes
+TouchableOpacity (icon only),accessibilityRole=button accessibilityLabel=PT-BR-action,accessibilityHint,hitSlop min 44dp
+Pressable (icon only),accessibilityRole=button accessibilityLabel=PT-BR-action,accessibilityHint accessibilityState,hitSlop min 44dp
+TextInput,accessibilityLabel,accessibilityHint returnKeyType,label describes expected content
+Switch,accessibilityRole=switch accessibilityState.checked,accessibilityLabel,
+Image (decorative),accessibilityRole=none accessible=false,,
+Image (informative),accessibilityRole=image accessibilityLabel,,
+Modal,accessibilityViewIsModal=true,,capture focus on open return on close
+Alert/Banner,accessibilityRole=alert accessibilityLiveRegion=assertive,,for urgent messages
+Status message,accessibilityLiveRegion=polite,,for non-urgent updates
+Loading button,accessibilityState.busy=true accessibilityLabel=loading-message,,disable while loading
+FlatList,accessibilityRole=list,accessibilityLabel=list-description,items need accessibilityRole=listitem
+ScrollView,,accessible=true,ensure all children are accessible

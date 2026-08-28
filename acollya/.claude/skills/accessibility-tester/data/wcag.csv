@@ -1,0 +1,14 @@
+criterion,level,principle,description,react_native_prop,priority
+1.1.1 Non-text Content,A,Perceivable,All non-text content has text alternative,accessibilityLabel,CRITICAL
+1.3.1 Info and Relationships,A,Perceivable,Structure conveyed through presentation is conveyed in text,accessibilityRole,CRITICAL
+1.4.3 Contrast Minimum,AA,Perceivable,Text has 4.5:1 contrast ratio (3:1 for large text),colors token check,HIGH
+1.4.4 Resize Text,AA,Perceivable,Text can be resized 200% without loss of content,allowFontScaling,MEDIUM
+2.1.1 Keyboard,A,Operable,All functionality available via keyboard/sequential navigation,focusable + tabIndex,HIGH
+2.4.3 Focus Order,A,Operable,Focus order preserves meaning,accessible + importantForAccessibility,HIGH
+2.4.6 Headings and Labels,AA,Operable,Headings and labels describe topic or purpose,accessibilityRole header,MEDIUM
+2.5.3 Label in Name,A,Operable,Label includes visible text,accessibilityLabel matches visible text,HIGH
+3.2.2 On Input,A,Understandable,Changing setting does not auto-trigger context change,explicit submit,HIGH
+3.3.1 Error Identification,A,Understandable,Error items identified and described in text,accessibilityLabel on error,HIGH
+3.3.2 Labels or Instructions,A,Understandable,Labels/instructions provided for user input,TextInput label,HIGH
+4.1.2 Name Role Value,A,Robust,All UI components have name role and value,accessibilityRole + Label + State,CRITICAL
+4.1.3 Status Messages,AA,Robust,Status messages can be determined by role or property,accessibilityLiveRegion,MEDIUM

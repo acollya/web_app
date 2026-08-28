@@ -46,9 +46,17 @@ class User(Base):
 
     @property
     def is_premium(self) -> bool:
-        if self.plan_code == 1 and self.subscription_status in ("active", "trialing"):
+        if self.plan_code in (1, 2) and self.subscription_status in ("active", "trialing"):
             return True
         return self.is_trial_active
+
+    @property
+    def is_essencial(self) -> bool:
+        return self.plan_code == 1 and self.subscription_status in ("active",)
+
+    @property
+    def is_completo(self) -> bool:
+        return self.plan_code == 2 and self.subscription_status in ("active",)
 
     @property
     def is_trial_active(self) -> bool:
