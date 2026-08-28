@@ -1,0 +1,4 @@
+[submodule "acollya/acollya-mobile"]
+	path = acollya/acollya-mobile
+	url = git@github.com:acollya/acollya-mobile.git
+	branch = main
