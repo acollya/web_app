@@ -63,6 +63,42 @@ def _calc_progress(total: int, completed: int) -> int:
     return round(completed / total * 100) if total else 0
 
 
+def _effective_plan_code(user: User) -> int:
+    """Plano efetivo para gating de catálogo. Trial de boas-vindas = acesso Completo."""
+    if user.plan_code in (1, 2) and user.subscription_status in ("active", "trialing"):
+        return user.plan_code
+    if user.is_trial_active:
+        return 2
+    return 0
+
+
+def _program_fields(program: Program, user: User) -> dict:
+    """Campos comuns de ProgramResponse a partir do modelo + gating por plano."""
+    included = (
+        program.min_plan_code is not None
+        and _effective_plan_code(user) >= program.min_plan_code
+    )
+    return dict(
+        id=program.id,
+        slug=program.slug,
+        title=program.title,
+        description=program.description,
+        about=program.about,
+        category=program.category,
+        duration_days=program.duration_days,
+        duration_label=program.duration_label,
+        format=program.format,
+        difficulty=program.difficulty,
+        audience=program.audience,
+        cover_image_key=program.cover_image_key,
+        is_premium=program.is_premium,
+        min_plan_code=program.min_plan_code,
+        price_min_brl=float(program.price_min_brl) if program.price_min_brl is not None else None,
+        price_max_brl=float(program.price_max_brl) if program.price_max_brl is not None else None,
+        included_in_plan=included,
+    )
+
+
 async def _chapter_count(db: AsyncSession, program_id: uuid.UUID) -> int:
     result = await db.execute(
         select(func.count()).select_from(Chapter).where(Chapter.program_id == program_id)
@@ -121,15 +157,7 @@ async def list_programs(db: AsyncSession, user: User) -> list[ProgramResponse]:
         total = chapter_counts.get(program.id, 0)
         completed = sum(1 for p in by_program.get(program.id, []) if p.completed)
         output.append(ProgramResponse(
-            id=program.id,
-            slug=program.slug,
-            title=program.title,
-            description=program.description,
-            category=program.category,
-            duration_days=program.duration_days,
-            difficulty=program.difficulty,
-            cover_image_key=program.cover_image_key,
-            is_premium=program.is_premium,
+            **_program_fields(program, user),
             total_chapters=total,
             completed_chapters=completed,
         ))
@@ -164,15 +192,7 @@ async def get_program(
     completed_count = sum(1 for p in progress_rows if p.completed)
 
     return ProgramDetailResponse(
-        id=program.id,
-        slug=program.slug,
-        title=program.title,
-        description=program.description,
-        category=program.category,
-        duration_days=program.duration_days,
-        difficulty=program.difficulty,
-        cover_image_key=program.cover_image_key,
-        is_premium=program.is_premium,
+        **_program_fields(program, user),
         total_chapters=len(chapters),
         completed_chapters=completed_count,
         chapters=[_build_chapter_response(c, progress_map) for c in chapters],
@@ -373,13 +393,25 @@ async def get_recommended(
 
     user_vec = await _recent_user_embedding(db, user)
     if user_vec is not None:
-        dist = Chapter.embedding.cosine_distance(user_vec)
+        # Score por capítulo mais próximo…
+        chapter_dist = Chapter.embedding.cosine_distance(user_vec)
         rows = await db.execute(
-            select(Chapter.program_id, func.min(dist).label("d"))
+            select(Chapter.program_id, func.min(chapter_dist).label("d"))
             .where(Chapter.embedding.isnot(None))
             .group_by(Chapter.program_id)
         )
         score = {row.program_id: row.d for row in rows}
+
+        # …combinado com o embedding do próprio programa (min dos dois) —
+        # programas do catálogo ainda sem capítulos também são recomendáveis.
+        prog_rows = await db.execute(
+            select(Program.id, Program.embedding.cosine_distance(user_vec).label("d"))
+            .where(Program.embedding.isnot(None))
+        )
+        for row in prog_rows:
+            existing = score.get(row.id)
+            score[row.id] = min(existing, row.d) if existing is not None else row.d
+
         candidates.sort(key=lambda p: score.get(p.id, float("inf")))
 
     return candidates[:limit]

@@ -119,3 +119,43 @@ async def embed_pending_chapters(db: AsyncSession) -> int:
         except Exception:
             pass
         return 0
+
+
+async def embed_pending_programs(db: AsyncSession) -> int:
+    """
+    Gera embeddings para Program records sem embedding (título + resumo + about).
+
+    Alimenta get_recommended (programas sem capítulos) e a descoberta semântica
+    do catálogo. Idempotente — mesmo padrão de embed_pending_chapters.
+    """
+    from app.models.program import Program
+
+    try:
+        result = await db.execute(
+            select(Program)
+            .where(Program.embedding.is_(None))
+            .limit(_BATCH_SIZE)
+        )
+        programs = result.scalars().all()
+
+        count = 0
+        for program in programs:
+            text_to_embed = f"{program.title}\n{program.description}\n{(program.about or '')[:2000]}"
+            embedding = await _generate_embedding(text_to_embed)
+            if embedding is None:
+                continue
+            program.embedding = embedding
+            count += 1
+
+        if count > 0:
+            await db.commit()
+            logger.info("Programs: embedded %d records", count)
+        return count
+
+    except Exception as exc:
+        logger.warning("embed_pending_programs failed silently: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return 0

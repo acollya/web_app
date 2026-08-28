@@ -74,11 +74,30 @@ _MAX_DISTANCE_CLINICAL = 0.40   # similarity > 0.60 — base de conhecimento cl�
 _MAX_DISTANCE_CHAPTERS = 0.38   # similarity > 0.62 — capítulos de programas
                                 # (entre chat e journal: conteúdo estruturado,
                                 #  mais longo que mood mas mais focado que clínico)
+_MAX_DISTANCE_CATALOG  = 0.60   # similarity > 0.40 — catálogo de programas
+                                # Calibrado empiricamente (2026-08-27): queries
+                                # on-topic ficam em 0.52–0.57; queries neutras em
+                                # 0.68+. O 0.60 fica na zona morta entre os dois.
+                                # (embeddings de programa incluem o `about` longo,
+                                #  por isso a distância é maior que nas outras tabelas)
 
 # Score multiplier aplicado aos resultados da base clínica para que ela seja
 # tratada como contexto SUPLEMENTAR, sem competir em igualdade com o histórico
 # pessoal do usuário (que tem maior valor terapêutico).
 _CLINICAL_SCORE_WEIGHT = 0.85
+
+# Catálogo de programas: sugestão suplementar, nunca compete com o histórico
+# pessoal nem com o conhecimento clínico — peso menor e no máximo 2 resultados.
+_CATALOG_SCORE_WEIGHT = 0.70
+
+
+def _effective_plan_code(user) -> int:
+    """Plano efetivo para o gating de sugestões (espelho de program_service)."""
+    if user.plan_code in (1, 2) and user.subscription_status in ("active", "trialing"):
+        return user.plan_code
+    if user.is_trial_active:
+        return 2
+    return 0
 
 # Score multiplier para capítulos de programas — ligeiramente abaixo da base
 # clínica pois os capítulos são mais longos e mais genéricos; o histórico
@@ -289,7 +308,7 @@ async def retrieve_context(
             snippet = row.content[:200].replace("\n", " ")
             role_label = "Acollya" if row.role == "assistant" else "Chat"
             line = f'[{role_label} - {_relative_time(row.created_at)}] "{snippet}"'
-            score = row.rrf_score * _time_decay_factor(row.created_at)
+            score = float(row.rrf_score) * _time_decay_factor(row.created_at)
             fragments.append((score, line))
 
         # ── journal_entries: hybrid BM25 + vetorial com RRF + time decay ───────
@@ -335,7 +354,7 @@ async def retrieve_context(
             snippet = row.content[:200].replace("\n", " ")
             label = row.title or "Diário"
             line = f'[{label} - {_relative_time(row.created_at)}] "{snippet}"'
-            score = row.rrf_score * _time_decay_factor(row.created_at)
+            score = float(row.rrf_score) * _time_decay_factor(row.created_at)
             fragments.append((score, line))
 
         # ── mood_checkins: apenas vetorial + time decay (sem texto rico) ────────
@@ -360,7 +379,7 @@ async def retrieve_context(
                 mood_str += f' — "{row.note[:120]}"'
             line = f"[Humor - {_relative_time(row.created_at)}] {mood_str}"
             # mood usa score vetorial invertido (distância → similaridade) com decay
-            vec_score = (1.0 / (_RRF_K + 1)) * (1 - row.distance)
+            vec_score = (1.0 / (_RRF_K + 1)) * (1 - float(row.distance))
             score = vec_score * _time_decay_factor(row.created_at)
             fragments.append((score, line))
 
@@ -414,7 +433,7 @@ async def retrieve_context(
         for row in rows.fetchall():
             snippet = row.content[:200].replace("\n", " ")
             line = f'[Programa: {row.program_title} — {row.chapter_title}] "{snippet}"'
-            score = row.rrf_score * _CHAPTERS_SCORE_WEIGHT
+            score = float(row.rrf_score) * _CHAPTERS_SCORE_WEIGHT
             fragments.append((score, line))
 
         # ── clinical_knowledge: hybrid BM25 + vetorial com RRF (sem time decay) ─
@@ -429,6 +448,7 @@ async def retrieve_context(
                            row_number() OVER (ORDER BY embedding <=> CAST(:vec AS vector)) AS vec_rank
                     FROM clinical_knowledge
                     WHERE embedding IS NOT NULL
+                      AND source != 'catalogo_voeo'
                       AND embedding <=> CAST(:vec AS vector) < :max_dist
                     LIMIT :k_inner
                 ),
@@ -437,6 +457,7 @@ async def retrieve_context(
                            row_number() OVER (ORDER BY ts_rank_cd(ts_content, plainto_tsquery('portuguese', :query)) DESC) AS bm25_rank
                     FROM clinical_knowledge
                     WHERE ts_content @@ plainto_tsquery('portuguese', :query)
+                      AND source != 'catalogo_voeo'
                     LIMIT :k_inner
                 )
                 SELECT COALESCE(v.id, b.id) AS id,
@@ -460,8 +481,44 @@ async def retrieve_context(
         for row in rows.fetchall():
             snippet = row.chunk_text[:240].replace("\n", " ")
             line = f'[Conhecimento clínico - {row.category}] "{snippet}"'
-            score = row.rrf_score * _CLINICAL_SCORE_WEIGHT
+            score = float(row.rrf_score) * _CLINICAL_SCORE_WEIGHT
             fragments.append((score, line))
+
+        # ── Catálogo de programas: vetorial puro, threshold próprio ──────────────
+        # Sugere um programa quando o tema do usuário casa claramente (ex:
+        # insônia → Reaprendendo a Dormir), com peso baixo (sugestão, não
+        # fundamento) e no máximo 2 resultados.
+        # REGRA DE PRODUTO (Kadu, 2026-08-27): o chat só sugere programas SEM
+        # custo para o usuário — inclusos no plano dele (min_plan_code <= plano
+        # efetivo). Programas pagos/bloqueados NUNCA entram no contexto do chat;
+        # upsell é papel das telas, não da conversa de acolhimento.
+        effective_plan = _effective_plan_code(user)
+        if effective_plan > 0:
+            rows = await db.execute(
+                text(
+                    """
+                    SELECT title, duration_label, description,
+                           embedding <=> CAST(:vec AS vector) AS dist
+                    FROM programs
+                    WHERE embedding IS NOT NULL
+                      AND is_active = TRUE
+                      AND min_plan_code IS NOT NULL
+                      AND min_plan_code <= :plan
+                      AND embedding <=> CAST(:vec AS vector) < :max_dist
+                    ORDER BY dist ASC
+                    LIMIT 2
+                    """
+                ),
+                {"vec": vec, "max_dist": _MAX_DISTANCE_CATALOG, "plan": effective_plan},
+            )
+            for row in rows.fetchall():
+                line = (
+                    f'[Programa incluso no plano do usuário — pode sugerir] '
+                    f'"{row.title} ({row.duration_label}): {row.description}"'
+                )
+                # Converte distância em pseudo-score compatível com a escala RRF
+                score = (1.0 / (60 + 1)) * (1.0 - float(row.dist)) * _CATALOG_SCORE_WEIGHT
+                fragments.append((score, line))
 
         if not fragments:
             return ""

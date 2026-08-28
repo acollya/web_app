@@ -80,6 +80,18 @@ Esses itens já quebraram o app antes ou têm invariantes críticas.
 | 2026-08-01 | `ai_response_cache` morta desde o schema inicial (zero referências no código) | DROP na migration 020 | `migrations/020_*.py` |
 | 2026-08-01 | `programs`/`chapters` com PK slug de texto (`ansiedade-2-1`) | Migration 021: id → UUID, slug preservado em coluna própria; `program_progress` remapeado; ver ADR-009 | `migrations/021_*.py`, `models/program.py`, `program_service.py` |
 
+### REGRA DE PRODUTO — Sugestão de programas no chat (Kadu, 2026-08-27)
+O RAG do chat SÓ sugere programas SEM custo para o usuário (`min_plan_code <= plano efetivo`).
+Programas pagos/bloqueados NUNCA entram no contexto da conversa — upsell é papel das telas
+(get_recommended do Home pode mostrar tudo). Implementado no bloco de catálogo do rag_service
+com threshold próprio `_MAX_DISTANCE_CATALOG=0.60` (calibrado: on-topic 0.52–0.57, neutro 0.68+).
+
+### Bug crítico resolvido — Decimal × float no retrieve_context (2026-08-27)
+`rrf_score`/`distance` chegavam como `Decimal` do asyncpg; qualquer match no histórico pessoal
+explodia o retrieve_context INTEIRO silenciosamente (RAG retornava vazio — memória "morta" sem
+sintoma). Pré-existente desde o hybrid search. Fix: `float()` em todas as multiplicações de score.
+⚠️ Padrão a vigiar: valores numéricos vindos de SQL bruto via asyncpg → sempre coagir com float().
+
 ### Simulação de assinante para testes (dev)
 ```sql
 UPDATE users SET plan_code = 2, subscription_status = 'active' WHERE email = '...';

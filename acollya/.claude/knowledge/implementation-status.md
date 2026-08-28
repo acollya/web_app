@@ -145,6 +145,47 @@ Identificado em 2026-07-25 após primeiros testes no dispositivo físico.
 - Item 4: bloqueia percepção de lentidão em produção — implementar antes do lançamento
 - Item 5: performance real — telas nunca refazem fetch se dado ainda é válido; TanStack Query já está no App.tsx, só falta usá-lo nas telas
 
+### Chat WhatsApp-like (proposta aprovada em plano 2026-08-25) — ⏳ ROADMAP
+
+Composer fluido estilo WhatsApp. Proposta completa de agente de design aprovada em plan-mode.
+Invariantes: SSE delta/done/error, crisis detection síncrona (transcrição SEMPRE antes do pipeline).
+
+| Fase | Entrega | Esforço |
+|------|---------|---------|
+| F1 | Fluidez: mic⇄send morphing (1 botão), hold-to-record + slide-to-cancel + lock alimentando a transcrição atual, fix emoji 🎙️→Ionicons, haptics, placeholder "Escreva o que sentir…", degradação p/ screen reader | ~3-4 dias, sem backend |
+| F2 | Áudio-mensagem: bolha com player + transcrição colapsável; `POST /chat/audio-message` (S3 + Whisper → content → fluxo SSE); migration media_key/media_type/transcription; deleção S3 em cascata (LGPD); atualizar política de privacidade ANTES | ~1-1.5 sem |
+| F3 | Imagens: botão + com bottom sheet, expo-image-picker/file-system, upload S3, bolha de imagem; **LLM NÃO vê a imagem** (crisis detection não opera sobre pixels); permissions strings novas | ~1 sem |
+| F3.5 | (opcional) Visão via Haiku com consentimento explícito por conversa + DPIA | avaliar |
+| F4 | Documentos: expo-document-picker, bolha de arquivo | ~2-3 dias |
+
+### Catálogo Voeo → banco (aprovado e carregado 2026-08-27) — ✅ COMPLETO
+
+- Migration 023 aplicada: 50 programas no banco (5 originais viraram os centrais in-place —
+  UUIDs/chapters/progress preservados; 45 novos). Gating: 5 plan 1 · 9 plan 2 · 36 bloqueados
+- 50 chunks `catalogo_programas` em clinical_knowledge + embeddings 50/50 nas duas bases
+- **RAG do chat conhece o catálogo**: bloco de retrieval dedicado em rag_service com
+  `_MAX_DISTANCE_CATALOG=0.55` e `_CATALOG_SCORE_WEIGHT=0.70` (máx 2 resultados, vetorial puro,
+  fonte `catalogo_voeo` EXCLUÍDA do bloco clínico). Racional: chunks longos têm distância maior
+  (~0.50 no melhor caso) — o threshold clínico 0.40 os cortava. Testado: insônia→programas de sono,
+  brigas→Conversas Difíceis, tema neutro→nada
+- get_recommended validado pós-carga: usuário com queixa de sono recebeu os 5 programas do pilar sono
+- ⚠️ Kadu vai refinar resumos/descrições depois (skills de copy + terapia da Ana Cristina) —
+  editar `content/catalog_voeo.json` E o banco (ou re-rodar seed em dev); resetar embedding=NULL
+  dos alterados e rodar embed jobs
+
+### ~~Catálogo Voeo (histórico do preparo 2026-08-25)~~
+
+- Migration 022 ✅ aplicada: programs += about, format, duration_label, audience, min_plan_code,
+  price_min/max_brl, iap_product_id, embedding Vector(1536) + ivfflat; ProgramResponse expõe tudo
+  + `included_in_plan` computado (trial = acesso Completo)
+- `embed_pending_programs()` no clinical_kb_service ✅; `get_recommended` usa min(chapters, program) ✅
+- **`content/catalog_voeo.json` ✅ redigido**: 50 produtos (8/10/9/15/8 por pilar), validado
+  (slugs/sort únicos, zero termos proibidos). Gating: 5 centrais plan 1 · 9 demais iniciantes
+  plan 2 · 36 bloqueados (upgrade/compra avulsa futura). Clube A Mesma Língua excluído (assinatura)
+- ⏳ Migration 023 (seed: 5 existentes viram centrais in-place + 45 inserts + chunks catalogo_programas
+  em clinical_knowledge) — SÓ após OK do Kadu na revisão do catálogo
+- ⏳ Após seed: rodar embed jobs (embed_all_pending + embed_pending_programs)
+
 ### Reestruturação de telas: Agendamentos, Programas e Diário (registrado 2026-08-03) — ⏳ PENDENTE
 
 Pedido do Kadu: aplicar às 3 telas o mesmo processo usado na remodelação da MoodHistory
@@ -153,7 +194,7 @@ Pedido do Kadu: aplicar às 3 telas o mesmo processo usado na remodelação da M
 | Tela | Escopo esperado | Arquivos |
 |------|-----------------|----------|
 | **Diário** (`JournalListScreen` + `JournalDetailScreen`) | Hierarquia/título, agrupamento por dia (paridade com Humor), indicadores no topo (streak de escrita? total?), estados vazios, cards | `screens/journal/*` |
-| **Programas** (`ProgramsScreen` + `ProgramDetailScreen` + `ChapterViewScreen`) | Aplicar linguagem visual dos posters/gradientes do carrossel do Home; categoria com cores; progresso visual; CATEGORY_EMOJI usa chaves pt-BR mas backend manda categorias em EN (bug latente — emojis nunca aparecem); revisar hierarquia do detalhe | `screens/programs/*` |
+| **Programas** (`ProgramsScreen` + `ProgramDetailScreen` + `ChapterViewScreen`) | Aplicar linguagem visual dos posters/gradientes do carrossel do Home; categoria com cores; progresso visual; CATEGORY_EMOJI usa chaves pt-BR mas backend manda categorias em EN (bug latente — emojis nunca aparecem); revisar hierarquia do detalhe. **+ Escopo do catálogo Voeo:** UI de programa bloqueado (cadeado) com botões de **upgrade de plano** e **compra avulsa** (design por agente — pedido do Kadu); exibir `about` estruturado, `duration_label`, formato e faixa de preço; adequação por formato (fases/modular/ferramenta/ao_vivo); renderer markdown p/ capítulos; alinhar tipos TS do programService | `screens/programs/*` |
 | **Agendamentos** (`AppointmentsScreen` + `TherapistsScreen` + `TherapistDetailScreen` + `AppointmentBookScreen`) | Fluxo completo nunca passou por revisão de UX; acessível só via Perfil — revisar descoberta, cards de terapeuta, fluxo de booking, estados vazios | `screens/appointments/*` |
 
 **Processo:** para cada tela, rodar agente ux-researcher com o arquivo + contexto (como feito
