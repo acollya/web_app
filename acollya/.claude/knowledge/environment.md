@@ -134,3 +134,19 @@ Secrets Manager ARNs (dev):
 |--------|----------|--------|
 | `main` | dev/staging | manual via CDK |
 | `release/*` | produção | CDK pipeline |
+
+---
+
+## ⚠️ Estrutura de repositórios (dual-tracking do backend)
+
+| Diretório | Repo GitHub | Rastreamento |
+|-----------|-------------|--------------|
+| `web_app/` (raiz) | `acollya/web_app` | monorepo — rastreia acollya-backend como ARQUIVOS diretos |
+| `acollya/acollya-mobile/` | `acollya/acollya-mobile` | submódulo registrado no .gitmodules |
+| `acollya/acollya-backend/` | `acollya/acollya-backend` | **repo aninhado NÃO-submódulo** — tem .git próprio E os arquivos são rastreados no web_app |
+
+**Consequência:** todo trabalho de backend commitado no web_app NÃO chega sozinho ao
+repo standalone `acollya-backend`. Fluxo de sync obrigatório ao fechar uma frente:
+`cd acollya/acollya-backend` → branch → commit de sync → PR → merge (padrão
+"sync from web_app" no histórico). Esquecer isso deixa o repo standalone meses
+defasado (aconteceu: maio→agosto/2026).
