@@ -146,3 +146,55 @@ _Registra decisões técnicas e de produto significativas: o QUÊ e principalmen
 **Por quê:** (1) webhook atualiza as colunas do User; (2) permite concessão manual de acesso (suporte/testes) via UPDATE simples; (3) evitou o bug em que chat/mood retornavam 402 para usuário com plan_code=2.
 
 **Consequências:** Chat e mood check-in/histórico exigem apenas autenticação (modelo 3-tier — rate limiter controla 10/20/ilimitado). Somente insights de IA permanecem atrás de `require_premium`.
+
+---
+
+## ADR-011: Deleção LGPD — hard-delete de conteúdo sensível (revoga parte do ADR-007)
+
+**Data:** 2026-08-29
+**Status:** Ativo (auditoria compliance-auditor)
+
+**Decisão:** `DELETE /users/me` apaga DEFINITIVAMENTE chat (mensagens+sessões), diário,
+humor, persona facts e user_sessions — conteúdo + embeddings. Preserva apenas registros
+pseudônimos SEM conteúdo sensível: crisis_events (probatório, Art. 16 I + Art. 7 §3),
+program_progress, appointments, subscriptions.
+
+**Por quê:** o texto livre do usuário contém dado sensível de saúde (Art. 11) — a
+pseudonimização da tabela users NÃO anonimiza esse conteúdo. Retenção para ML sem
+consentimento explícito era o risco legal #1 do projeto.
+
+**Consequências:** nenhuma retenção p/ ML (se um dia existir, exige opt-in específico +
+DPIA); MyDataScreen promete exatamente o que o código faz; ADR-007 permanece válido só
+para os registros não-sensíveis.
+
+---
+
+## ADR-012: Idade mínima 18 anos
+
+**Data:** 2026-08-29
+**Status:** Ativo — REVISITÁVEL com parecer jurídico
+
+**Decisão:** `minimum_age_years = 18` (config). Validado no cliente (modal) e no servidor.
+
+**Por quê:** 13 (COPPA) não tem base na LGPD. Adolescente 12-17 com dado sensível de
+saúde exigiria consentimento parental verificável (Art. 14) — fluxo não implementado.
+18 é a única posição defensável sem ele.
+
+**Consequências:** público adolescente fora do produto por ora; para incluí-lo:
+parecer jurídico + fluxo de consentimento parental (roadmap distante).
+
+---
+
+## ADR-013: Consentimento SSO — gate server-side (get_consented_user)
+
+**Data:** 2026-08-29
+**Status:** Ativo
+
+**Decisão:** No SSO a conta nasce com terms_accepted=false; TODAS as rotas que tratam
+dado sensível (chat, mood, journal, media) usam `get_consented_user` → 403 até o
+usuário concluir POST /users/me/consents (termos versionados + consentimento saúde +
+nascimento). require_premium herda o gate.
+
+**Por quê:** o modal client-side era teatro — a conta existia com token válido antes
+do aceite (browsewrap ≠ consentimento específico Art. 11 §1). Enforcement no servidor
+fecha a janela mesmo se o app morrer no meio do fluxo.

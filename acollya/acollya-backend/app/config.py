@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     anthropic_insight_model: str = "claude-haiku-4-5-20251001"
 
     # ── App Config ────────────────────────────────────────────────────────────
+    # Versão vigente dos Termos de Uso / Política de Privacidade.
+    # Atualizar ao publicar nova versão — usuários com terms_version anterior
+    # deverão re-aceitar (fluxo futuro de re-aceite).
+    terms_version: str = "2026-08-28"
+    # Idade mínima para uso do app. 18 por decisão de compliance (auditoria
+    # 2026-08-29): dado sensível de saúde de adolescente 12-17 exigiria fluxo
+    # de consentimento parental verificável (LGPD Art. 14) — não implementado.
+    # Reduzir só com parecer jurídico + fluxo parental.
+    minimum_age_years: int = 18
     trial_days: int = 7
     free_chat_messages_per_day: int = 10
     essencial_chat_messages_per_day: int = 20

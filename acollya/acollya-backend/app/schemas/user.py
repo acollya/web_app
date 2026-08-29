@@ -29,6 +29,9 @@ class UserResponse(BaseModel):
     is_premium: bool
     terms_accepted: bool
     terms_accepted_date: Optional[datetime]
+    terms_version: Optional[str] = None
+    health_data_consent: bool = False
+    health_data_consent_date: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -42,6 +45,37 @@ class UserUpdate(BaseModel):
     gender: Optional[str] = Field(None, max_length=30)
     push_token_fcm: Optional[str] = None
     push_token_apns: Optional[str] = None
+
+
+class ConsentUpdateRequest(BaseModel):
+    """
+    POST /users/me/consents — registra o aceite granular pós-cadastro.
+
+    Usado pelo fluxo SSO: o usuário é criado no callback do Google/Apple e o
+    modal de termos coleta em seguida (a) aceite dos termos, (b) consentimento
+    ESPECÍFICO para dados sensíveis de saúde (LGPD Art. 11) e (c) data de
+    nascimento para verificação de idade mínima.
+    """
+    terms_accepted: bool
+    health_data_consent: bool
+    birth_date: date
+
+    @field_validator("terms_accepted")
+    @classmethod
+    def must_accept_terms(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("É necessário aceitar os Termos de Uso para usar o Acollya.")
+        return v
+
+    @field_validator("health_data_consent")
+    @classmethod
+    def must_consent_health(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError(
+                "O consentimento para tratamento de dados de saúde emocional é "
+                "necessário para o funcionamento do Acollya."
+            )
+        return v
 
 
 class PasswordChangeRequest(BaseModel):

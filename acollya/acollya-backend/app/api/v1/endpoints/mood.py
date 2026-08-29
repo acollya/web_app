@@ -15,7 +15,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user, get_db, require_premium
+from app.core.dependencies import get_consented_user, get_db, require_premium
 from app.models.user import User
 from app.schemas.mood import (
     MoodCheckinCreate,
@@ -38,7 +38,7 @@ router = APIRouter()
 async def create_checkin(
     body: MoodCheckinCreate,
     background_tasks: BackgroundTasks,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MoodCheckinResponse:
     checkin = await mood_service.create_checkin(db, current_user, body, background_tasks)
@@ -60,7 +60,7 @@ async def create_checkin(
     summary="List mood check-in history (paginated)",
 )
 async def list_checkins(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
