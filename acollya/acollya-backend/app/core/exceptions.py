@@ -74,6 +74,15 @@ class AuthorizationError(AcollyaException):
     default_message = "Você não tem permissão para realizar esta ação"
 
 
+class ConsentRequiredError(AcollyaException):
+    """LGPD Art. 11 — tratamento de dado sensível bloqueado até o consentimento granular."""
+    status_code = 403
+    default_message = (
+        "Para continuar, precisamos do seu consentimento para o tratamento de "
+        "dados de saúde emocional. Conclua o aceite nos Termos do app."
+    )
+
+
 # ── 404 ───────────────────────────────────────────────────────────────────────
 
 class NotFoundError(AcollyaException):

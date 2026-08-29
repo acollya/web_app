@@ -15,7 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user, get_db, get_redis, require_premium
+from app.core.dependencies import get_consented_user, get_db, get_redis, require_premium
 from app.core.rate_limiter import RateLimiter
 from app.models.user import User
 from app.schemas.journal import (
@@ -117,7 +117,7 @@ async def list_entries(
     summary="Get personalized journal prompt suggestions",
 )
 async def suggest_journal_prompts(
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> JournalPromptSuggestionsResponse:
@@ -138,7 +138,7 @@ async def suggest_journal_prompts(
 )
 async def get_entry(
     entry_id: uuid.UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JournalEntryResponse:
     return await journal_service.get_entry(db, current_user, str(entry_id))
@@ -153,7 +153,7 @@ async def update_entry(
     entry_id: uuid.UUID,
     body: JournalEntryUpdate,
     background_tasks: BackgroundTasks,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> JournalEntryResponse:
     return await journal_service.update_entry(db, current_user, str(entry_id), body, background_tasks)
@@ -166,7 +166,7 @@ async def update_entry(
 )
 async def delete_entry(
     entry_id: uuid.UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Response:
     await journal_service.delete_entry(db, current_user, str(entry_id))

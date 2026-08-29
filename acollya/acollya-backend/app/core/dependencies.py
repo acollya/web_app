@@ -119,10 +119,32 @@ async def get_optional_user(
     return await _resolve_user(token, db, required=False)
 
 
+# ── LGPD consent guard (Art. 11) ──────────────────────────────────────────────
+
+async def get_consented_user(
+    user: Annotated[User, Depends(get_current_user)],
+) -> User:
+    """
+    Gate server-side de consentimento LGPD: bloqueia (403) qualquer rota que
+    trate dado sensível de saúde enquanto o usuário não tiver concluído o
+    aceite granular (consentimento Art. 11 + data de nascimento/idade mínima)
+    via POST /users/me/consents.
+
+    Fecha a janela do fluxo SSO em que a conta existe (token válido) antes do
+    modal de consentimento — sem este gate, dado sensível poderia ser criado
+    sem consentimento válido. (Auditoria de compliance 2026-08-29, achado C1.)
+    """
+    from app.core.exceptions import ConsentRequiredError
+
+    if not user.health_data_consent or user.birth_date is None:
+        raise ConsentRequiredError()
+    return user
+
+
 # ── Subscription guards ────────────────────────────────────────────────────────
 
 async def require_premium(
-    user: Annotated[User, Depends(get_current_user)],
+    user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> User:
     """

@@ -20,6 +20,7 @@ from app.core.rate_limiter import RateLimiter
 from app.models.user import User
 from app.schemas.auth import MessageResponse
 from app.schemas.user import (
+    ConsentUpdateRequest,
     PasswordChangeRequest,
     SessionListResponse,
     SessionResponse,
@@ -67,6 +68,50 @@ async def delete_me(
 ) -> Response:
     await user_service.delete_me(db, current_user, redis)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/me/consents",
+    response_model=UserResponse,
+    summary="Registra consentimentos LGPD (termos + dados de saúde + idade)",
+    description=(
+        "Registra o aceite dos Termos de Uso (com a versão vigente), o "
+        "consentimento específico para tratamento de dados sensíveis de saúde "
+        "emocional (LGPD Art. 11) e a data de nascimento (verificação de idade "
+        "mínima). Usado pelo modal de termos após o cadastro via SSO."
+    ),
+)
+async def update_consents(
+    body: ConsentUpdateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserResponse:
+    return await user_service.update_consents(
+        db, current_user, body.terms_accepted, body.health_data_consent, body.birth_date
+    )
+
+
+@router.get(
+    "/me/export",
+    summary="Exporta todos os dados pessoais do usuário (LGPD Art. 18)",
+    description=(
+        "Retorna um JSON estruturado com todos os dados pessoais do titular: "
+        "perfil, registros de humor, diário, conversas, fatos de personalização, "
+        "progresso e agendamentos. Direito de portabilidade. Rate limit: 3/hora."
+    ),
+)
+async def export_my_data(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    redis: Annotated[Redis, Depends(get_redis)],
+) -> dict:
+    await RateLimiter(redis).check_and_increment(
+        user_id=str(current_user.id),
+        action="data_export",
+        limit=3,
+        window_seconds=3600,
+    )
+    return await user_service.export_my_data(db, current_user)
 
 
 @router.patch(

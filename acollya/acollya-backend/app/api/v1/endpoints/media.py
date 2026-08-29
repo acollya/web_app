@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, field_validator
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_current_user, get_db, get_redis
+from app.core.dependencies import get_consented_user, get_db, get_redis
 from app.database import AsyncSessionLocal
 from app.core.exceptions import RateLimitError
 from app.core.rate_limiter import RateLimiter
@@ -124,7 +124,7 @@ async def _bg_extract_facts_transcription(user_id: uuid.UUID, text: str) -> None
 )
 async def transcribe_audio(
     background_tasks: BackgroundTasks,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     redis: Annotated[Redis, Depends(get_redis)],
     file: UploadFile = File(..., description="Arquivo de áudio (m4a, mp3, wav, webm, ogg)"),
@@ -235,7 +235,7 @@ async def transcribe_audio(
 )
 async def text_to_speech(
     body: TTSRequest,
-    current_user: Annotated[User, Depends(get_current_user)],
+    current_user: Annotated[User, Depends(get_consented_user)],
     redis: Annotated[Redis, Depends(get_redis)],
 ) -> TTSResponse:
     """

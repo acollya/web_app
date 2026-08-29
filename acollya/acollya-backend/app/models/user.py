@@ -32,11 +32,18 @@ class User(Base):
     anonymized_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     terms_accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     terms_accepted_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Versão dos termos aceitos (ex: "2026-08-28") — rastreio p/ re-aceite futuro
+    terms_version: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # LGPD Art. 11 — consentimento ESPECÍFICO para tratamento de dados sensíveis
+    # de saúde emocional (humor, diário, conversas). Separado dos termos gerais.
+    health_data_consent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    health_data_consent_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Relationships — sem cascade delete: registros do usuário são preservados
-    # para anonimização LGPD e eventual fine-tuning de SLMs.
+    # Relationships — sem cascade delete no ORM: a deleção LGPD é explícita e
+    # seletiva no user_service.delete_me (conteúdo sensível hard-deleted;
+    # apenas registros pseudônimos não-sensíveis são preservados — ADR-011).
     subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user", cascade="save-update, merge")
     mood_checkins: Mapped[list["MoodCheckin"]] = relationship(back_populates="user", cascade="save-update, merge")
     journal_entries: Mapped[list["JournalEntry"]] = relationship(back_populates="user", cascade="save-update, merge")
