@@ -186,6 +186,10 @@ async def delete_me(
     if redis is not None:
         await _revoke_user_refresh_tokens(redis, user_id_str)
 
+    # 8. Mídia S3 do usuário (chat-audio/, tts/) — best-effort, nunca levanta
+    from app.services.storage_service import delete_user_prefixes
+    await delete_user_prefixes(user_id_str)
+
 
 async def _revoke_user_refresh_tokens(redis: Redis, user_id: str) -> None:
     """

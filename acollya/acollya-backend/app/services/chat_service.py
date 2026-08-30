@@ -541,9 +541,24 @@ async def list_messages(
     )
     messages = result.scalars().all()
 
+    # Mensagens com mídia (F2-F4): gera URL pré-assinada de leitura (TTL 1h)
+    def _to_response(m: ChatMessage) -> ChatMessageResponse:
+        resp = ChatMessageResponse.model_validate(m)
+        if m.media_key and m.media_type:
+            try:
+                from app.services.storage_service import presign
+                url = presign(m.media_key, ttl_seconds=3600)
+                if m.media_type == "audio":
+                    resp.audio_url = url
+                else:
+                    resp.media_url = url
+            except Exception as exc:
+                logger.warning("presign falhou p/ %s: %s", m.id, exc)
+        return resp
+
     return ChatHistoryResponse(
         session_id=session_id,
-        items=[ChatMessageResponse.model_validate(m) for m in messages],
+        items=[_to_response(m) for m in messages],
         total=total,
         page=page,
         page_size=page_size,
@@ -691,6 +706,10 @@ async def stream_message(
     session_id: uuid.UUID,
     user_content: str,
     background_tasks: Optional[BackgroundTasks] = None,
+    media_key: Optional[str] = None,
+    media_type: Optional[str] = None,
+    duration_seconds: Optional[int] = None,
+    media_filename: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Streaming send: yields SSE-formatted strings.
@@ -746,6 +765,10 @@ async def stream_message(
         content=user_content,
         tokens_used=None,
         cached=False,
+        media_key=media_key,
+        media_type=media_type,
+        duration_seconds=duration_seconds,
+        media_filename=media_filename,
     )
     db.add(user_msg)
     await db.commit()

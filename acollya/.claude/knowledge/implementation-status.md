@@ -145,7 +145,28 @@ Identificado em 2026-07-25 após primeiros testes no dispositivo físico.
 - Item 4: bloqueia percepção de lentidão em produção — implementar antes do lançamento
 - Item 5: performance real — telas nunca refazem fetch se dado ainda é válido; TanStack Query já está no App.tsx, só falta usá-lo nas telas
 
-### Chat WhatsApp-like (proposta aprovada em plano 2026-08-25) — ⏳ ROADMAP
+### Chat WhatsApp-like — ✅ F1-F4 IMPLEMENTADOS (2026-08-29)
+
+- **F1** `ChatComposer.tsx`: mic⇄send morphing (1 botão), hold-to-record (PanResponder),
+  slide-to-cancel (80px), lock (60px↑ → lixeira+timer+enviar), haptics, placeholder
+  "Escreva o que sentir…", degradação p/ leitor de tela (tap gravar/parar), reduced-motion;
+  🎙️→Ionicons também no VoiceInputButton (Journal)
+- **F2** áudio-mensagem: soltar o mic ENVIA áudio · migration 025 (media_key/type/duration)
+  · POST /chat/sessions/{id}/audio-message (S3 chat-audio/{user}/ + Whisper → transcrição
+  vira content → MESMO pipeline SSE; crisis detection intocada) · rate limits chat diário
+  + 20 transcrições/h compartilhado · AudioMessageBubble (player expo-audio + transcrição
+  colapsável) · presigned TTL 1h na leitura · delete_me apaga S3 (storage_service)
+- **F3/F4** anexos: migration 026 (media_filename) · POST /media-message unificado
+  (imagem ≤10MB jpeg/png/webp/heic · doc ≤20MB pdf/txt/doc(x)) · **LLM NUNCA vê o
+  binário** — responde à legenda (content=caption) · AttachmentSheet (Galeria/Câmera/
+  Documento) · preview + legenda no composer · Image/DocumentMessageBubble
+- ⚠️ **F3/F4 exigem REBUILD EAS** (expo-image-picker + expo-document-picker + permission
+  strings no app.json); attachmentService usa lazy require — dev client atual NÃO quebra,
+  o botão + avisa "atualize o app". F1/F2 testáveis via Metro já.
+- ⚠️ Antes do launch de F2: Política de Privacidade deve mencionar gravação/armazenamento
+  de áudio (legal-checklist)
+
+### ~~Chat — proposta original (histórico 2026-08-25)~~
 
 Composer fluido estilo WhatsApp. Proposta completa de agente de design aprovada em plan-mode.
 Invariantes: SSE delta/done/error, crisis detection síncrona (transcrição SEMPRE antes do pipeline).
