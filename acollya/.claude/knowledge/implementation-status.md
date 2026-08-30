@@ -145,39 +145,31 @@ Identificado em 2026-07-25 após primeiros testes no dispositivo físico.
 - Item 4: bloqueia percepção de lentidão em produção — implementar antes do lançamento
 - Item 5: performance real — telas nunca refazem fetch se dado ainda é válido; TanStack Query já está no App.tsx, só falta usá-lo nas telas
 
-### Chat WhatsApp-like — ⏪ REVERTIDO EM 2026-08-29, REIMPLEMENTAR DO ZERO
+### Chat WhatsApp-like — 🔁 RESTAURADO EM 2026-08-30, aguardando gate no aparelho
 
-**Histórico**: F1-F4 foram implementados de uma vez (2026-08-29) e revertidos no mesmo dia
-por decisão do Kadu — um `require` nativo no top-level crashou o boot do app, a sessão
-Metro/dev-client corrompeu, e a confiança na entrega foi comprometida. Os 3 PRs foram
-FECHADOS sem merge; os 3 branches estão preservados como referência de código:
-- mobile `feat/chat-whatsapp-epic` (PR#3 fechado) — ChatComposer/AudioMessageBubble/
-  AttachmentBubbles/AttachmentSheet/attachmentService + fixes de linking.ts e AppState
-- web_app `feat/chat-media-backend` (PR#3 fechado) — endpoints audio/media-message,
-  storage_service, migrations 025/026 (JÁ REVERTIDAS no banco local: `alembic current`=024)
-- acollya-backend `feat/sync-chat-media` (PR#2 fechado)
+**Linha do tempo**: F1-F4 implementados (2026-08-29) → revertidos no mesmo dia (crash de
+boot por require nativo top-level + app "quebrado") → **causa raiz real descoberta em
+2026-08-30: `.env` do mobile ausente** (app chamava localhost = o próprio iPhone; ver
+environment.md) → branches restaurados com aval do Kadu, pois o código foi auditado por
+2 agentes independentes e o único defeito real (require) já estava corrigido no branch.
 
-**Aprendizados obrigatórios para a reimplementação** (detalhe em known-issues.md):
-1. **1 fase = 1 PR = 1 smoke-test do Kadu no aparelho ANTES de seguir** — nunca mais
-   entregar F1-F4 de uma vez sem validação no dispositivo entre fases
-2. Libs nativas novas: require SEMPRE dentro de função (nunca top-level) + instalar
-   os packages SÓ na fase que os usa (F3/F4), de preferência atrás do rebuild EAS
-3. `tsc`/`expo export` não pegam erro de runtime nativo — o critério de pronto é o
+**Estado atual**:
+- Branches ativos: mobile `feat/chat-whatsapp-epic` · web_app `feat/chat-media-backend`
+  · acollya-backend `feat/sync-chat-media`; migrations 025/026 reaplicadas (`alembic`=026)
+- **GATE PENDENTE: smoke-test do Kadu no aparelho (F1 composer + F2 áudio) ANTES de
+  mergear os 3 PRs.** Anexos (F3/F4) mostram "atualize o app" até o rebuild EAS — é o
+  comportamento correto (lazy require), não é bug.
+- Inclusos no branch mobile: fixes de linking.ts (deep links Programas no tab certo) e
+  App.tsx (reset AppState só após background real > 5 min)
+- Pós-merge pendentes: rebuild EAS p/ F3/F4 · "chat-media" em USER_MEDIA_PREFIXES do
+  storage_service (gap LGPD deleção) · Política de Privacidade mencionar áudio (KADU)
+
+**Aprendizados que continuam valendo** (detalhe em known-issues.md):
+1. **1 fase = 1 PR = smoke-test no aparelho antes de seguir** (para features futuras)
+2. Libs nativas: require SEMPRE dentro de função; package só entra na fase que o usa
+3. `tsc`/`expo export` não pegam erro de runtime nativo — critério de pronto é o
    app abrindo no aparelho
-4. Fixes descobertos no incidente a REAPLICAR na reimplementação (estão no branch
-   mobile preservado, commit a8cdde5): linking.ts (Programas/Analytics aninhados no
-   tab errado — deep links quebrados) e App.tsx (reset p/ Home em qualquer blip de
-   AppState — conflita com pickers/prompts de permissão; usar threshold de 5 min)
-5. Backend do épico foi validado e é sólido (transcrição vira content ANTES do
-   pipeline; LLM nunca vê binário) — a arquitetura pode ser reaproveitada como está
-
-**Fases (replanejadas — validação no aparelho entre CADA uma):**
-| Fase | Entrega | Gate |
-|------|---------|------|
-| F1 | Fluidez do composer (sem backend, sem lib nova) | Kadu testa no aparelho |
-| F2 | Áudio-mensagem (backend + bolha player; expo-audio já existe no dev client) | Kadu testa no aparelho |
-| F3/F4 | Anexos imagem+documento — EXIGE rebuild EAS primeiro (libs novas) | rebuild → Kadu testa |
-| F3.5 | (opcional) Visão via Haiku com consentimento explícito + DPIA | avaliar |
+4. Todas as telas falhando ao carregar ao mesmo tempo = verificar `.env` PRIMEIRO
 
 ### Catálogo Voeo → banco (aprovado e carregado 2026-08-27) — ✅ COMPLETO
 

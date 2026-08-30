@@ -26,6 +26,12 @@ class ChatMessage(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     tokens_used: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     cached: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # Chat F2-F4 — mídia: áudio (content = transcrição), imagem e documento
+    # (content = legenda; o LLM NUNCA vê o binário — só texto)
+    media_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    media_type: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # audio|image|document
+    media_filename: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    duration_seconds: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     embedding: Mapped[Optional[list]] = mapped_column(Vector(1536), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

@@ -65,9 +65,15 @@ class ChatMessageResponse(BaseModel):
     id: uuid.UUID
     session_id: Optional[uuid.UUID]
     role: str                        # "user" | "assistant"
-    content: str
+    content: str                     # p/ áudio: a transcrição
     tokens_used: Optional[int]
     cached: bool
+    # Chat F2-F4 — mídia (áudio/imagem/documento)
+    media_type: Optional[str] = None          # 'audio' | 'image' | 'document' | None
+    media_filename: Optional[str] = None
+    duration_seconds: Optional[int] = None
+    audio_url: Optional[str] = None           # presigned p/ áudio (TTL 1h)
+    media_url: Optional[str] = None           # presigned p/ imagem/documento (TTL 1h)
     created_at: datetime
 
     model_config = {"from_attributes": True}
