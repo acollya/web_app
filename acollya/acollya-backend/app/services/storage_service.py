@@ -13,8 +13,10 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Prefixos de mídia por usuário — manter em sincronia com delete_user_prefixes
-USER_MEDIA_PREFIXES = ("chat-audio", "tts")
+# Prefixos de mídia por usuário — TODO novo prefixo de upload namespaced por
+# user_id DEVE entrar aqui, senão a exclusão de conta (LGPD) deixa os arquivos
+# órfãos no S3. Usados por delete_user_prefixes().
+USER_MEDIA_PREFIXES = ("chat-audio", "chat-media", "tts")
 
 
 def _client():
