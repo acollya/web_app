@@ -163,7 +163,7 @@ acima do composer · fixes linking.ts + AppState (reset só após background > 5
 
 **Pendentes pós-merge**:
 - Rebuild EAS (`eas build --profile development`) → libera F3/F4 no aparelho
-- "chat-media" em `USER_MEDIA_PREFIXES` do storage_service (gap LGPD deleção)
+- ~~"chat-media" em USER_MEDIA_PREFIXES~~ ✅ feito 2026-08-30 (web_app#4 + backend#3)
 - Política de Privacidade mencionar gravação/armazenamento de áudio (KADU)
 
 **Aprendizados que continuam valendo** (detalhe em known-issues.md):
