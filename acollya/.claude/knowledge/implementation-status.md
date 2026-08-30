@@ -145,24 +145,26 @@ Identificado em 2026-07-25 após primeiros testes no dispositivo físico.
 - Item 4: bloqueia percepção de lentidão em produção — implementar antes do lançamento
 - Item 5: performance real — telas nunca refazem fetch se dado ainda é válido; TanStack Query já está no App.tsx, só falta usá-lo nas telas
 
-### Chat WhatsApp-like — 🔁 RESTAURADO EM 2026-08-30, aguardando gate no aparelho
+### Chat WhatsApp-like — ✅ MERGEADO NA MAIN EM 2026-08-30 (gate no aparelho aprovado)
 
 **Linha do tempo**: F1-F4 implementados (2026-08-29) → revertidos no mesmo dia (crash de
 boot por require nativo top-level + app "quebrado") → **causa raiz real descoberta em
 2026-08-30: `.env` do mobile ausente** (app chamava localhost = o próprio iPhone; ver
-environment.md) → branches restaurados com aval do Kadu, pois o código foi auditado por
-2 agentes independentes e o único defeito real (require) já estava corrigido no branch.
+environment.md) → restaurados com aval do Kadu (código auditado por 2 agentes) →
+**smoke-test F1/F2 no aparelho APROVADO** → PRs mergeados: mobile#3, web_app#3,
+backend#2 (+ mobile#4: "Insight/Reflexão da Acollya" em vez de "da IA").
 
-**Estado atual**:
-- Branches ativos: mobile `feat/chat-whatsapp-epic` · web_app `feat/chat-media-backend`
-  · acollya-backend `feat/sync-chat-media`; migrations 025/026 reaplicadas (`alembic`=026)
-- **GATE PENDENTE: smoke-test do Kadu no aparelho (F1 composer + F2 áudio) ANTES de
-  mergear os 3 PRs.** Anexos (F3/F4) mostram "atualize o app" até o rebuild EAS — é o
-  comportamento correto (lazy require), não é bug.
-- Inclusos no branch mobile: fixes de linking.ts (deep links Programas no tab certo) e
-  App.tsx (reset AppState só após background real > 5 min)
-- Pós-merge pendentes: rebuild EAS p/ F3/F4 · "chat-media" em USER_MEDIA_PREFIXES do
-  storage_service (gap LGPD deleção) · Política de Privacidade mencionar áudio (KADU)
+**Na main**: F1 composer (mic⇄send, hold-to-record, slide-to-cancel, lock) · F2
+áudio-mensagem (bolha player + transcrição colapsável; S3+Whisper→content→pipeline
+intocado) · F3/F4 anexos (endpoint media-message; **no aparelho mostram "atualize o
+app" até o rebuild EAS — comportamento correto**, lazy require) · FAB do chat 44px
+acima do composer · fixes linking.ts + AppState (reset só após background > 5 min)
+· migrations 025/026 (`alembic`=026).
+
+**Pendentes pós-merge**:
+- Rebuild EAS (`eas build --profile development`) → libera F3/F4 no aparelho
+- "chat-media" em `USER_MEDIA_PREFIXES` do storage_service (gap LGPD deleção)
+- Política de Privacidade mencionar gravação/armazenamento de áudio (KADU)
 
 **Aprendizados que continuam valendo** (detalhe em known-issues.md):
 1. **1 fase = 1 PR = smoke-test no aparelho antes de seguir** (para features futuras)
