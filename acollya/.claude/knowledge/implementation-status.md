@@ -145,39 +145,31 @@ Identificado em 2026-07-25 após primeiros testes no dispositivo físico.
 - Item 4: bloqueia percepção de lentidão em produção — implementar antes do lançamento
 - Item 5: performance real — telas nunca refazem fetch se dado ainda é válido; TanStack Query já está no App.tsx, só falta usá-lo nas telas
 
-### Chat WhatsApp-like — ✅ F1-F4 IMPLEMENTADOS (2026-08-29)
+### Chat WhatsApp-like — 🔁 RESTAURADO EM 2026-08-30, aguardando gate no aparelho
 
-- **F1** `ChatComposer.tsx`: mic⇄send morphing (1 botão), hold-to-record (PanResponder),
-  slide-to-cancel (80px), lock (60px↑ → lixeira+timer+enviar), haptics, placeholder
-  "Escreva o que sentir…", degradação p/ leitor de tela (tap gravar/parar), reduced-motion;
-  🎙️→Ionicons também no VoiceInputButton (Journal)
-- **F2** áudio-mensagem: soltar o mic ENVIA áudio · migration 025 (media_key/type/duration)
-  · POST /chat/sessions/{id}/audio-message (S3 chat-audio/{user}/ + Whisper → transcrição
-  vira content → MESMO pipeline SSE; crisis detection intocada) · rate limits chat diário
-  + 20 transcrições/h compartilhado · AudioMessageBubble (player expo-audio + transcrição
-  colapsável) · presigned TTL 1h na leitura · delete_me apaga S3 (storage_service)
-- **F3/F4** anexos: migration 026 (media_filename) · POST /media-message unificado
-  (imagem ≤10MB jpeg/png/webp/heic · doc ≤20MB pdf/txt/doc(x)) · **LLM NUNCA vê o
-  binário** — responde à legenda (content=caption) · AttachmentSheet (Galeria/Câmera/
-  Documento) · preview + legenda no composer · Image/DocumentMessageBubble
-- ⚠️ **F3/F4 exigem REBUILD EAS** (expo-image-picker + expo-document-picker + permission
-  strings no app.json); attachmentService usa lazy require — dev client atual NÃO quebra,
-  o botão + avisa "atualize o app". F1/F2 testáveis via Metro já.
-- ⚠️ Antes do launch de F2: Política de Privacidade deve mencionar gravação/armazenamento
-  de áudio (legal-checklist)
+**Linha do tempo**: F1-F4 implementados (2026-08-29) → revertidos no mesmo dia (crash de
+boot por require nativo top-level + app "quebrado") → **causa raiz real descoberta em
+2026-08-30: `.env` do mobile ausente** (app chamava localhost = o próprio iPhone; ver
+environment.md) → branches restaurados com aval do Kadu, pois o código foi auditado por
+2 agentes independentes e o único defeito real (require) já estava corrigido no branch.
 
-### ~~Chat — proposta original (histórico 2026-08-25)~~
+**Estado atual**:
+- Branches ativos: mobile `feat/chat-whatsapp-epic` · web_app `feat/chat-media-backend`
+  · acollya-backend `feat/sync-chat-media`; migrations 025/026 reaplicadas (`alembic`=026)
+- **GATE PENDENTE: smoke-test do Kadu no aparelho (F1 composer + F2 áudio) ANTES de
+  mergear os 3 PRs.** Anexos (F3/F4) mostram "atualize o app" até o rebuild EAS — é o
+  comportamento correto (lazy require), não é bug.
+- Inclusos no branch mobile: fixes de linking.ts (deep links Programas no tab certo) e
+  App.tsx (reset AppState só após background real > 5 min)
+- Pós-merge pendentes: rebuild EAS p/ F3/F4 · "chat-media" em USER_MEDIA_PREFIXES do
+  storage_service (gap LGPD deleção) · Política de Privacidade mencionar áudio (KADU)
 
-Composer fluido estilo WhatsApp. Proposta completa de agente de design aprovada em plan-mode.
-Invariantes: SSE delta/done/error, crisis detection síncrona (transcrição SEMPRE antes do pipeline).
-
-| Fase | Entrega | Esforço |
-|------|---------|---------|
-| F1 | Fluidez: mic⇄send morphing (1 botão), hold-to-record + slide-to-cancel + lock alimentando a transcrição atual, fix emoji 🎙️→Ionicons, haptics, placeholder "Escreva o que sentir…", degradação p/ screen reader | ~3-4 dias, sem backend |
-| F2 | Áudio-mensagem: bolha com player + transcrição colapsável; `POST /chat/audio-message` (S3 + Whisper → content → fluxo SSE); migration media_key/media_type/transcription; deleção S3 em cascata (LGPD); atualizar política de privacidade ANTES | ~1-1.5 sem |
-| F3 | Imagens: botão + com bottom sheet, expo-image-picker/file-system, upload S3, bolha de imagem; **LLM NÃO vê a imagem** (crisis detection não opera sobre pixels); permissions strings novas | ~1 sem |
-| F3.5 | (opcional) Visão via Haiku com consentimento explícito por conversa + DPIA | avaliar |
-| F4 | Documentos: expo-document-picker, bolha de arquivo | ~2-3 dias |
+**Aprendizados que continuam valendo** (detalhe em known-issues.md):
+1. **1 fase = 1 PR = smoke-test no aparelho antes de seguir** (para features futuras)
+2. Libs nativas: require SEMPRE dentro de função; package só entra na fase que o usa
+3. `tsc`/`expo export` não pegam erro de runtime nativo — critério de pronto é o
+   app abrindo no aparelho
+4. Todas as telas falhando ao carregar ao mesmo tempo = verificar `.env` PRIMEIRO
 
 ### Catálogo Voeo → banco (aprovado e carregado 2026-08-27) — ✅ COMPLETO
 

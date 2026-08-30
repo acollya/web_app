@@ -93,6 +93,19 @@ EXPO_PUBLIC_API_URL=http://MacBook-Pro-de-Kadu.local:8000/api/v1
 de IP do DHCP (que já quebraram o app 2×). Não voltar a usar IP fixo.
 **Porta:** `8000` (FastAPI). Mudança no `.env` exige restart do Metro (`--clear`).
 
+⚠️ **`.env` é NÃO-VERSIONADO e é ponto único de falha (incidente 2026-08-30)**:
+sem ele, `app.config.ts` cai no fallback `http://localhost:8000` — que no APARELHO
+aponta para o próprio iPhone → **TODAS as telas falham** ("Não foi possível
+carregar", "Nenhum programa disponível", recomendações sumidas), com backend e
+código 100% saudáveis. Essa assinatura de sintomas (todas as telas com erro de
+carregamento ao mesmo tempo) → **verificar PRIMEIRO se `.env` existe** antes de
+qualquer diagnóstico de código/API/banco:
+`ls acollya-mobile/.env` → se ausente, recriar de `.env.example` trocando a URL
+para a de mDNS acima e reiniciar o Metro com `--clear`.
+Verificação fim-a-fim sem aparelho:
+`curl -s -H "expo-platform: ios" localhost:8081/ | jq '..|.apiUrl? // empty'`
+(a URL viaja no MANIFEST do Expo, não dentro do bundle JS).
+
 ### Build type
 
 ```bash
