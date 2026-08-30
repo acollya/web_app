@@ -145,18 +145,39 @@ Identificado em 2026-07-25 após primeiros testes no dispositivo físico.
 - Item 4: bloqueia percepção de lentidão em produção — implementar antes do lançamento
 - Item 5: performance real — telas nunca refazem fetch se dado ainda é válido; TanStack Query já está no App.tsx, só falta usá-lo nas telas
 
-### Chat WhatsApp-like (proposta aprovada em plano 2026-08-25) — ⏳ ROADMAP
+### Chat WhatsApp-like — ⏪ REVERTIDO EM 2026-08-29, REIMPLEMENTAR DO ZERO
 
-Composer fluido estilo WhatsApp. Proposta completa de agente de design aprovada em plan-mode.
-Invariantes: SSE delta/done/error, crisis detection síncrona (transcrição SEMPRE antes do pipeline).
+**Histórico**: F1-F4 foram implementados de uma vez (2026-08-29) e revertidos no mesmo dia
+por decisão do Kadu — um `require` nativo no top-level crashou o boot do app, a sessão
+Metro/dev-client corrompeu, e a confiança na entrega foi comprometida. Os 3 PRs foram
+FECHADOS sem merge; os 3 branches estão preservados como referência de código:
+- mobile `feat/chat-whatsapp-epic` (PR#3 fechado) — ChatComposer/AudioMessageBubble/
+  AttachmentBubbles/AttachmentSheet/attachmentService + fixes de linking.ts e AppState
+- web_app `feat/chat-media-backend` (PR#3 fechado) — endpoints audio/media-message,
+  storage_service, migrations 025/026 (JÁ REVERTIDAS no banco local: `alembic current`=024)
+- acollya-backend `feat/sync-chat-media` (PR#2 fechado)
 
-| Fase | Entrega | Esforço |
-|------|---------|---------|
-| F1 | Fluidez: mic⇄send morphing (1 botão), hold-to-record + slide-to-cancel + lock alimentando a transcrição atual, fix emoji 🎙️→Ionicons, haptics, placeholder "Escreva o que sentir…", degradação p/ screen reader | ~3-4 dias, sem backend |
-| F2 | Áudio-mensagem: bolha com player + transcrição colapsável; `POST /chat/audio-message` (S3 + Whisper → content → fluxo SSE); migration media_key/media_type/transcription; deleção S3 em cascata (LGPD); atualizar política de privacidade ANTES | ~1-1.5 sem |
-| F3 | Imagens: botão + com bottom sheet, expo-image-picker/file-system, upload S3, bolha de imagem; **LLM NÃO vê a imagem** (crisis detection não opera sobre pixels); permissions strings novas | ~1 sem |
-| F3.5 | (opcional) Visão via Haiku com consentimento explícito por conversa + DPIA | avaliar |
-| F4 | Documentos: expo-document-picker, bolha de arquivo | ~2-3 dias |
+**Aprendizados obrigatórios para a reimplementação** (detalhe em known-issues.md):
+1. **1 fase = 1 PR = 1 smoke-test do Kadu no aparelho ANTES de seguir** — nunca mais
+   entregar F1-F4 de uma vez sem validação no dispositivo entre fases
+2. Libs nativas novas: require SEMPRE dentro de função (nunca top-level) + instalar
+   os packages SÓ na fase que os usa (F3/F4), de preferência atrás do rebuild EAS
+3. `tsc`/`expo export` não pegam erro de runtime nativo — o critério de pronto é o
+   app abrindo no aparelho
+4. Fixes descobertos no incidente a REAPLICAR na reimplementação (estão no branch
+   mobile preservado, commit a8cdde5): linking.ts (Programas/Analytics aninhados no
+   tab errado — deep links quebrados) e App.tsx (reset p/ Home em qualquer blip de
+   AppState — conflita com pickers/prompts de permissão; usar threshold de 5 min)
+5. Backend do épico foi validado e é sólido (transcrição vira content ANTES do
+   pipeline; LLM nunca vê binário) — a arquitetura pode ser reaproveitada como está
+
+**Fases (replanejadas — validação no aparelho entre CADA uma):**
+| Fase | Entrega | Gate |
+|------|---------|------|
+| F1 | Fluidez do composer (sem backend, sem lib nova) | Kadu testa no aparelho |
+| F2 | Áudio-mensagem (backend + bolha player; expo-audio já existe no dev client) | Kadu testa no aparelho |
+| F3/F4 | Anexos imagem+documento — EXIGE rebuild EAS primeiro (libs novas) | rebuild → Kadu testa |
+| F3.5 | (opcional) Visão via Haiku com consentimento explícito + DPIA | avaliar |
 
 ### Catálogo Voeo → banco (aprovado e carregado 2026-08-27) — ✅ COMPLETO
 
