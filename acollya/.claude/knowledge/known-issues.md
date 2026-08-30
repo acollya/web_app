@@ -40,6 +40,30 @@ Esses itens já quebraram o app antes ou têm invariantes críticas.
 - Hooks SEMPRE antes de qualquer early return
 - Falha anterior: `useOnboardingChecklist()` estava em linha 182, após early return em linha 174
 
+### Módulos nativos novos — require NUNCA no top-level (CRÍTICO — incidente 2026-08-29)
+- **Regra**: qualquer lib nativa nova (fora do dev client atual) só pode ser
+  requerida DENTRO da função que a usa, com try/catch. `require` no top-level de
+  um módulo importado pela navegação executa no BOOT — a falha derruba TODAS as
+  telas, não só a feature (todas as telas são importadas estaticamente, sem lazy).
+- **Incidente**: `attachmentService.ts` fez `require('expo-image-picker')` no
+  top-level → app crashou no boot inteiro → iterações de Fast Refresh sobre a
+  árvore crashada deixaram a sessão JS do aparelho corrompida (telas nativas
+  fantasma do react-native-screens): "histórico abria humor", voltar caía em
+  pilhas antigas, chat/programas não abriam — com o código no disco já correto.
+- **Recuperação após janela de boot-crash**: matar o Metro, `rm -rf $TMPDIR/metro-*
+  node_modules/.cache`, `npx expo start --dev-client --clear`, e FORCE-QUIT do
+  app no aparelho (remover do app switcher) + cold start. Reload simples NÃO
+  basta — a hierarquia nativa contaminada sobrevive ao reload.
+- Precedente correto: `iapService.ts` (mas só porque nada de navegação o importa
+  no boot — não confiar nesse acaso; requires sempre dentro das funções).
+
+### AppState reset (política mudada em 2026-08-29)
+- `App.tsx`: reset para Home ao retomar só acontece após background REAL > 5 min.
+  Blips de `inactive` (prompt de permissão, Control Center, notificação) e
+  backgrounds curtos (pickers de galeria/câmera/documento do chat) NÃO resetam.
+- NÃO voltar ao comportamento antigo (reset em qualquer retomada): destruía o
+  fluxo de anexos do chat e qualquer navegação em andamento.
+
 ### Port 5432 (CONFIGURAÇÃO LOCAL)
 - Acollya postgres usa **porta 5433** (não 5432) devido a conflito com outro container
 - `.env` deve ter `DB_PORT=5433`
