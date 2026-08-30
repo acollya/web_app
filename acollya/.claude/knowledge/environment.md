@@ -163,3 +163,21 @@ repo standalone `acollya-backend`. Fluxo de sync obrigatório ao fechar uma fren
 `cd acollya/acollya-backend` → branch → commit de sync → PR → merge (padrão
 "sync from web_app" no histórico). Esquecer isso deixa o repo standalone meses
 defasado (aconteceu: maio→agosto/2026).
+
+### ⚠️ iCloud Drive × node_modules (incidente 2026-08-30)
+
+O projeto vive em `~/Documents` → **iCloud "Desktop & Documents" sincroniza tudo**
+e, durante churn pesado (npm ci/install), cria cópias de conflito `nome 2` /
+`nome 2.ext`. Foram removidos **972 itens** duplicados de
+`acollya-mobile/node_modules` + 5 cópias no `src/` + `.git/index 2`.
+
+**Assinatura**: erro `TS2688: Cannot find type definition file for 'node 2'`
+pendurado no tsconfig.json, ou qualquer arquivo `* 2.*` aparecendo sozinho.
+
+**Limpeza**:
+`find node_modules \( -name "* 2.*" -o -name "* 2" \) -exec rm -rf {} +`
+
+**Prevenção (ação do Kadu, recomendada)**: tirar a pasta de dev do alcance do
+iCloud — mover `~/Documents/VsCode` para `~/dev` (exige recriar o venv do
+backend, que tem paths absolutos) OU desativar "Desktop & Documents" no iCloud.
+Enquanto isso não acontecer, o problema PODE VOLTAR a cada npm install grande.
